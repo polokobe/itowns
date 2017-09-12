@@ -31,7 +31,9 @@ function readCoordinates(crsIn, crsOut, coordinates, extent) {
     const out = [];
     for (const pair of coordinates) {
         // TODO: 1 is a default z value, makes this configurable
-        const coords = new Coordinates(crsIn, pair[0], pair[1], 1);
+        var zValue = 1;
+        if (pair.length > 2) zValue = pair[2];
+        const coords = new Coordinates(crsIn, pair[0], pair[1], zValue);
         if (crsIn === crsOut) {
             out.push(coords);
         } else {
