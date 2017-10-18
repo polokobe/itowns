@@ -5,6 +5,8 @@ import { RENDERING_PAUSED, MAIN_LOOP_EVENTS } from '../MainLoop';
 import { COLOR_LAYERS_ORDER_CHANGED } from '../../Renderer/ColorLayersOrdering';
 import RendererConstant from '../../Renderer/RendererConstant';
 import GlobeControls from '../../Renderer/ThreeExtended/GlobeControls';
+import ImmersiveControls from '../../Renderer/ThreeExtended/ImmersiveControls';
+
 import { unpack1K } from '../../Renderer/LayeredMaterial';
 
 import { GeometryLayer } from '../Layer/Layer';
@@ -233,6 +235,8 @@ function GlobeView(viewerDiv, coordCarto, options = {}) {
 
     if (options.noControls) {
         this.camera.camera3D.lookAt(positionTargetCamera.as('EPSG:4978').xyz());
+    } else if (options.immersiveControls) {
+        this.controls = new ImmersiveControls(this);
     } else {
         this.controls = new GlobeControls(this, positionTargetCamera.as('EPSG:4978').xyz(), size);
         this.controls.handleCollision = typeof (options.handleCollision) !== 'undefined' ? options.handleCollision : true;
