@@ -22,6 +22,7 @@ export { MAIN_LOOP_EVENTS } from './Core/MainLoop';
 export { default as View } from './Core/View';
 export { process3dTilesNode, init3dTilesLayer, $3dTilesCulling, $3dTilesSubdivisionControl, pre3dTilesUpdate } from './Process/3dTilesProcessing';
 export { default as FeatureProcessing } from './Process/FeatureProcessing';
+export { default as OrientedImageProcessing } from './Process/OrientedImageProcessing';
 export { updateLayeredMaterialNodeImagery, updateLayeredMaterialNodeElevation } from './Process/LayeredMaterialNodeProcessing';
 export { processTiledGeometryNode, initTiledGeometryLayer } from './Process/TiledNodeProcessing';
 export { ColorLayersOrdering } from './Renderer/ColorLayersOrdering';

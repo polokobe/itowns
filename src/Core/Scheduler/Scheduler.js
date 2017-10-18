@@ -15,6 +15,7 @@ import WFS_Provider from './Providers/WFS_Provider';
 import Raster_Provider from './Providers/Raster_Provider';
 import StaticProvider from './Providers/StaticProvider';
 import CancelledCommandException from './CancelledCommandException';
+import OrientedImage_Provider from './Providers/OrientedImage_Provider';
 
 var instanceScheduler = null;
 
@@ -100,6 +101,7 @@ Scheduler.prototype.initDefaultProviders = function initDefaultProviders() {
     this.addProtocolProvider('wfs', new WFS_Provider());
     this.addProtocolProvider('rasterizer', Raster_Provider);
     this.addProtocolProvider('static', StaticProvider);
+    this.addProtocolProvider('orientedimage', new OrientedImage_Provider());
 };
 
 Scheduler.prototype.runCommand = function runCommand(command, queue, executingCounterUpToDate) {
