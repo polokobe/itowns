@@ -11,9 +11,13 @@ describe('Planar example', function () {
                 itownsTesting.countVisibleAndDisplayed(obj);
             }
 
-            assert.equal(itownsTesting.counters.displayed_at_level[2], 6);
-            assert.equal(itownsTesting.counters.displayed_at_level[3], 11);
-            assert.equal(itownsTesting.counters.displayed_at_level[4], 20);
+            // assert.equal(itownsTesting.counters.displayed_at_level[2], 6);
+            // assert.equal(itownsTesting.counters.displayed_at_level[3], 11);
+            // assert.equal(itownsTesting.counters.displayed_at_level[4], 20);
+
+            assert.equal(itownsTesting.counters.displayed_at_level[2], 3);
+            assert.equal(itownsTesting.counters.displayed_at_level[3], 10);
+            assert.equal(itownsTesting.counters.displayed_at_level[4], 16);
 
             done();
         });
