@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import OBB from '../../../Renderer/ThreeExtended/OBB';
 import Coordinates from '../../Geographic/Coordinates';
+import Extent from '../../Geographic/Extent';
 
 function PlanarTileBuilder() {
     this.tmp = {
@@ -50,19 +51,17 @@ PlanarTileBuilder.prototype.vProjecte = function vProjecte(v, params)
 };
 
 // get oriented bounding box of tile
-PlanarTileBuilder.prototype.OBB = function _OBB(params) {
-    const center = params.center;
-    const max = new THREE.Vector3(
-        params.extent.east(),
-        params.extent.north(),
-        0).sub(center);
-    const min = new THREE.Vector3(
-        params.extent.west(),
-        params.extent.south(),
-        0).sub(center);
-    const translate = new THREE.Vector3(0, 0, 0);
-    // normal is up vector
-    return new OBB(min, max, undefined, translate);
+PlanarTileBuilder.prototype.OBB = function OBBFn(boundingBox) {
+    return new OBB(boundingBox.min, boundingBox.max);
+};
+
+// return common extent to pool the geometries
+// the geometry in common extent is identical to the existing input
+// with a translation
+PlanarTileBuilder.prototype.getCommonGeometryExtent = function getCommonGeometryExtentFn(extent) {
+    const communExtent = new Extent(extent.crs(), 0, Math.abs(extent.west() - extent.east()), 0, Math.abs(extent.north() - extent.south()));
+    communExtent._internalStorageUnit = extent._internalStorageUnit;
+    return communExtent;
 };
 
 export default PlanarTileBuilder;

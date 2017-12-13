@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import OBB from '../../../Renderer/ThreeExtended/OBB';
 import Coordinates, { UNIT } from '../../Geographic/Coordinates';
+import Extent from '../../Geographic/Extent';
 
 function PanoramaTileBuilder(ratio) {
     this.tmp = {
@@ -26,14 +27,19 @@ PanoramaTileBuilder.prototype.constructor = PanoramaTileBuilder;
 
 // prepare params
 // init projected object -> params.projected
+const axisX = new THREE.Vector3(0, 1, 0);
 PanoramaTileBuilder.prototype.Prepare = function Prepare(params) {
+    const angle = (params.extent.north(UNIT.RADIAN) + params.extent.south(UNIT.RADIAN)) * 0.5;
+
     if (this.equirectangular) {
+        params.quatNormalToZ = new THREE.Quaternion().setFromAxisAngle(axisX, (Math.PI * 0.5 - angle));
         params.projected = {
             theta: 0,
             phi: 0,
             radius: this.radius,
         };
     } else {
+        params.quatNormalToZ = new THREE.Quaternion().setFromAxisAngle(axisX, (Math.PI * 0.5));
         params.projected = {
             theta: 0,
             radius: this.radius,
@@ -60,9 +66,8 @@ PanoramaTileBuilder.prototype.VertexPosition = function VertexPosition(params) {
     } else {
         this.tmp.position.setFromCylindrical(params.projected);
     }
-    const swap = this.tmp.position.y;
-    this.tmp.position.y = this.tmp.position.z;
-    this.tmp.position.z = this.equirectangular ? -swap : swap;
+
+    this.tmp.position.set(this.tmp.position.z, this.tmp.position.x, this.tmp.position.y);
 
     return this.tmp.position;
 };
@@ -75,20 +80,20 @@ PanoramaTileBuilder.prototype.VertexNormal = function VertexNormal() {
 // coord u tile to projected
 PanoramaTileBuilder.prototype.uProjecte = function uProjecte(u, params) {
     // both (theta, phi) and (y, z) are swapped in setFromSpherical
-    params.projected.theta = THREE.Math.lerp(
-        params.extent.west(UNIT.RADIAN),
+    params.projected.theta = Math.PI - THREE.Math.lerp(
         params.extent.east(UNIT.RADIAN),
-        u);
+        params.extent.west(UNIT.RADIAN),
+        1 - u);
 };
 
 // coord v tile to projected
 PanoramaTileBuilder.prototype.vProjecte = function vProjecte(v, params) {
     if (this.equirectangular) {
-        params.projected.phi = Math.PI * 0.5 +
+        params.projected.phi = Math.PI * 0.5 -
             THREE.Math.lerp(
-                params.extent.south(UNIT.RADIAN),
                 params.extent.north(UNIT.RADIAN),
-                v);
+                params.extent.south(UNIT.RADIAN),
+                1 - v);
     } else {
         params.projected.y =
             this.height *
@@ -97,57 +102,28 @@ PanoramaTileBuilder.prototype.vProjecte = function vProjecte(v, params) {
 };
 
 // get oriented bounding box of tile
-PanoramaTileBuilder.prototype.OBB = function _OBB(params) {
-    if (this.equirectangular) {
-        const pts = [];
-        //      0---1---2
-        //      |       |
-        //      7   8   3
-        //      |       |
-        //      6---5---4
-        const uvs = [
-            [0, 0.0], [0.5, 0], [1, 0.0],
-            [1, 0.5], [1, 1.0], [0.5, 1],
-            [0, 1.0], [0, 0.5], [0.5, 0.5]];
-        for (const uv of uvs) {
-            this.uProjecte(uv[0], params);
-            this.vProjecte(uv[1], params);
-            pts.push(this.VertexPosition(params).clone());
-        }
-        return OBB.cardinalsXYZToOBB(pts, params.extent.center().longitude(UNIT.RADIAN), false);
-    } else {
-        // 3 points: corners + center
-        const pts = [];
-        this.uProjecte(0.5, params);
-        this.vProjecte(0.5, params);
-        pts.push(this.VertexPosition(params).clone());
-        this.uProjecte(0, params);
-        this.vProjecte(0, params);
-        pts.push(this.VertexPosition(params).clone());
-        this.uProjecte(1, params);
-        this.vProjecte(1, params);
-        pts.push(this.VertexPosition(params).clone());
+PanoramaTileBuilder.prototype.OBB = function _OBB(boundingBox) {
+    return new OBB(boundingBox.min, boundingBox.max);
+};
 
-        const direction = params.center.clone();
-        direction.z = 0;
-        direction.normalize();
+PanoramaTileBuilder.prototype.getCommonGeometryExtent = function getCommonGeometryExtentFn(extent) {
+    const sizeLongitude = Math.abs(extent.west() - extent.east()) / 2;
+    const communExtent = new Extent(extent.crs(), -sizeLongitude, sizeLongitude, extent.south(), extent.north());
+    communExtent._internalStorageUnit = extent._internalStorageUnit;
+    return communExtent;
+};
 
-        const diffExtent = new THREE.Vector3().subVectors(pts[2], pts[1]);
-        const height = diffExtent.z;
-        diffExtent.z = 0;
+const axisY = new THREE.Vector3(0, 1, 0);
+const axisZ = new THREE.Vector3(0, 0, 1);
+const quatToAlignLongitude = new THREE.Quaternion();
+const quatToAlignLatitude = new THREE.Quaternion();
 
-        const length = diffExtent.length();
-
-        const diff = new THREE.Vector3().subVectors(params.center, pts[1]);
-        diff.z = 0;
-        const thickness = diff.dot(direction);
-
-        const min = new THREE.Vector3(-length * 0.5, -height * 0.5, -thickness * 0.5);
-        const max = new THREE.Vector3(length * 0.5, height * 0.5, thickness * 0.5);
-
-        const translate = new THREE.Vector3(0, 0, thickness * -0.5);
-        return new OBB(min, max, direction, translate);
-    }
+PanoramaTileBuilder.prototype.getQuaternionFromExtent = function getQuaternionFromExtentFn(extentFrom, extentTo) {
+    const rotLon = extentTo.west(UNIT.RADIAN) - extentFrom.west(UNIT.RADIAN);
+    const rotLat = Math.PI * 0.5 - (!this.equirectangular ? 0 : (extentFrom.north(UNIT.RADIAN) + extentFrom.south(UNIT.RADIAN)) * 0.5);
+    quatToAlignLongitude.setFromAxisAngle(axisZ, -rotLon);
+    quatToAlignLatitude.setFromAxisAngle(axisY, -rotLat);
+    return quatToAlignLongitude.multiply(quatToAlignLatitude);
 };
 
 export default PanoramaTileBuilder;
