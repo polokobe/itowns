@@ -1,0 +1,7 @@
+{
+"type": "FeatureCollection",
+
+"features": [
+{ "type": "Feature", "properties": { "altitude": 39.390000, "heading": 176.117188, "date": "2014-06-16T12:31:34.841Z", "easting": 651187.760000, "pitch": 1.280821, "id": 482, "roll": 0.126007, "northing": 6861379.050000 }, "geometry": { "type": "Point", "coordinates": [ 2.33481381638492, 48.850602961052147, 39.39 ] } }
+]
+}
