@@ -201,7 +201,7 @@ class ImmersiveControls extends THREE.EventDispatcher {
         this.currentLayerIndex = 0;
 
         this.moves = new Set();
-        this.moveSpeed = options.moveSpeed || 10; // backward or forward move speed in m/s
+        this.moveSpeed = options.moveSpeed || 1; // backward or forward move speed in m/s
         this._isUserInteracting = false;
         this._onMouseDownMouseX = 0;
         this._onMouseDownMouseY = 0;
