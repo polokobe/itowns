@@ -24,9 +24,9 @@ function _minimizeNetworkTraffic(node, nodeLevel, currentLevel) {
 //     * nodeLevel = 4 -> 3
 //     * nodeLevel = 7 -> 7
 //     * nodeLevel = 15 -> 12
-function _group(nodeLevel, currentLevel, options) {
-    var f = options.groups.filter(val => (val <= nodeLevel));
-    return f.length ? f[f.length - 1] : options.groups[0];
+export function getGroupLevel(nodeLevel, currentLevel, groups) {
+    var f = groups.filter(val => (val <= nodeLevel));
+    return f.length ? f[f.length - 1] : groups[0];
 }
 
 function _progressive(nodeLevel, currentLevel, options) {
@@ -49,7 +49,7 @@ function _dichotomy(nodeLevel, currentLevel, options) {
 export function chooseNextLevelToFetch(strategy, node, nodeLevel, currentLevel, layer) {
     switch (strategy) {
         case STRATEGY_GROUP:
-            return _group(nodeLevel, currentLevel, layer.updateStrategy.options);
+            return getGroupLevel(nodeLevel, currentLevel, layer.updateStrategy.options.groups);
         case STRATEGY_PROGRESSIVE:
             return _progressive(nodeLevel, currentLevel, layer.updateStrategy.options);
         case STRATEGY_DICHOTOMY:
