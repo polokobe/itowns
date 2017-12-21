@@ -126,4 +126,31 @@ PanoramaTileBuilder.prototype.getQuaternionFromExtent = function getQuaternionFr
     return quatToAlignLongitude.multiply(quatToAlignLatitude);
 };
 
+PanoramaTileBuilder.prototype.computeSharableExtent = function fnComputeSharableExtent(extent) {
+    // Compute sharable extent to pool the geometries
+    // the geometry in common extent is identical to the existing input
+    // with a transformation (translation, rotation)
+
+    // TODO: It should be possible to use equatorial plan symetrie,
+    // but we should be reverse UV on tile
+    // Common geometry is looking for only on longitude
+    const sizeLongitude = Math.abs(extent.west() - extent.east()) / 2;
+    const sharableExtent = new Extent(extent.crs(), -sizeLongitude, sizeLongitude, extent.south(), extent.north());
+    sharableExtent._internalStorageUnit = extent._internalStorageUnit;
+
+    // compute rotation to transform tile to position it on ellipsoid
+    // this transformation take into account the transformation of the parents
+    const rotLon = extent.west(UNIT.RADIAN) - sharableExtent.west(UNIT.RADIAN);
+    const rotLat = Math.PI * 0.5 - (!this.equirectangular ? 0 : (extent.north(UNIT.RADIAN) + extent.south(UNIT.RADIAN)) * 0.5);
+    quatToAlignLongitude.setFromAxisAngle(axisZ, -rotLon);
+    quatToAlignLatitude.setFromAxisAngle(axisY, -rotLat);
+    quatToAlignLongitude.multiply(quatToAlignLatitude);
+
+    return {
+        sharableExtent,
+        quaternion: quatToAlignLongitude,
+        position: this.Center(extent),
+    };
+};
+
 export default PanoramaTileBuilder;

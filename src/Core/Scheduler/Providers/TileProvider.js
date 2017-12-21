@@ -59,14 +59,16 @@ TileProvider.prototype.executeCommand = function executeCommand(command) {
         this.cacheGeometry[level] = new Map();
     }
 
-    const ce = builder.getCommonGeometryExtent(extent);
-    const south = ce.south().toFixed(8);
+    const { sharableExtent, quaternion, position } = builder.computeSharableExtent(extent);
+    const south = sharableExtent.south().toFixed(8);
+
+    console.log(quaternion, position);
 
     let geometry = this.cacheGeometry[level].get(south);
     // build geometry if doesn't exist
     if (!geometry) {
         const paramsGeometry = {
-            extent: ce,
+            extent: sharableExtent,
             level,
             segment: layer.segments || 16,
             disableSkirt: layer.disableSkirt,
@@ -76,7 +78,6 @@ TileProvider.prototype.executeCommand = function executeCommand(command) {
         this.cacheGeometry[level].set(south, geometry);
     }
 
-    // get geometry from cache
     // build tile
     const params = {
         layerId: layer.id,
@@ -85,25 +86,19 @@ TileProvider.prototype.executeCommand = function executeCommand(command) {
         materialOptions: layer.materialOptions,
     };
 
-    builder.Center(params);
-    var tile = new TileMesh(geometry, params);
+    const tile = new TileMesh(geometry, params);
     tile.layer = layer.id;
     tile.layers.set(command.threejsLayer);
 
     if (parent) {
-        params.center.applyMatrix4(layer.object3d.matrixWorld);
-        parent.worldToLocal(params.center);
+        position.applyMatrix4(layer.object3d.matrixWorld);
+        parent.worldToLocal(position);
+        worldQuaternion.setFromRotationMatrix(parent.matrixWorld).premultiply(layer.object3d.invQuaternion);
+        quaternion.premultiply(worldQuaternion.inverse());
     }
 
-    tile.position.copy(params.center);
-
-    if (builder.getQuaternionFromExtent) {
-        tile.quaternion.copy(builder.getQuaternionFromExtent(geometry.extent, tile.extent));
-        if (parent) {
-            worldQuaternion.setFromRotationMatrix(parent.matrixWorld).premultiply(layer.object3d.invQuaternion);
-            tile.quaternion.premultiply(worldQuaternion.inverse());
-        }
-    }
+    tile.position.copy(position);
+    tile.quaternion.copy(quaternion);
 
     tile.material.transparent = layer.opacity < 1.0;
     tile.material.uniforms.opacity.value = layer.opacity;

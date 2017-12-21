@@ -22,10 +22,11 @@ PlanarTileBuilder.prototype.Prepare = function Prepare(params) {
 
 
 // get center tile in cartesian 3D
-PlanarTileBuilder.prototype.Center = function Center(params) {
-    params.extent.center(this.tmp.coords);
-    params.center = new THREE.Vector3(this.tmp.coords.x(), this.tmp.coords.y(), 0);
-    return params.center;
+const center = new THREE.Vector3();
+PlanarTileBuilder.prototype.Center = function Center(extent) {
+    extent.center(this.tmp.coords);
+    center.set(this.tmp.coords.x(), this.tmp.coords.y(), 0);
+    return center;
 };
 
 // get position 3D cartesian
@@ -55,13 +56,18 @@ PlanarTileBuilder.prototype.OBB = function OBBFn(boundingBox) {
     return new OBB(boundingBox.min, boundingBox.max);
 };
 
-// return common extent to pool the geometries
-// the geometry in common extent is identical to the existing input
-// with a translation
-PlanarTileBuilder.prototype.getCommonGeometryExtent = function getCommonGeometryExtentFn(extent) {
-    const communExtent = new Extent(extent.crs(), 0, Math.abs(extent.west() - extent.east()), 0, Math.abs(extent.north() - extent.south()));
-    communExtent._internalStorageUnit = extent._internalStorageUnit;
-    return communExtent;
+const quaternion = new THREE.Quaternion();
+PlanarTileBuilder.prototype.computeSharableExtent = function fnComputeSharableExtent(extent) {
+    // compute sharable extent to pool the geometries
+    // the geometry in common extent is identical to the existing input
+    // with a translation
+    const sharableExtent = new Extent(extent.crs(), 0, Math.abs(extent.west() - extent.east()), 0, Math.abs(extent.north() - extent.south()));
+    sharableExtent._internalStorageUnit = extent._internalStorageUnit;
+    return {
+        sharableExtent,
+        quaternion,
+        position: this.Center(extent).clone(),
+    };
 };
 
 export default PlanarTileBuilder;
