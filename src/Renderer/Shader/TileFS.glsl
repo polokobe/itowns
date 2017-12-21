@@ -122,21 +122,26 @@ void main() {
                             textureIndex,
                             projWGS84 ? vUv_WGS84 : uvPM);
 
-                        if (layerColor.a > 0.0) {
+                        bool isVisible = layerColor.a > 0.0;
+                        // if first texture is transparent, we need to force blending with first background color (CWhite)
+                        if ((isVisible && paramsA.w > 0.0) || !validTexture) {
                             validTexture = true;
-                            float lum = 1.0;
-
-                            if(paramsA.z > 0.0) {
-                                float a = max(0.05,1.0 - length(layerColor.xyz-CWhite.xyz));
-                                if(paramsA.z > 2.0) {
-                                    a = (layerColor.r + layerColor.g + layerColor.b)*0.333333333;
-                                    layerColor*= layerColor*layerColor;
-                                }
-                                lum = 1.0-pow(abs(a),paramsA.z);
+                            // Premultiply-alpha is used to avoid gl_linear filtering artifact.
+                            // We don't use material.premultipliedAlpha which is used to blend the materials
+                            if (isVisible) {
+                                // unassociate the alpha (because id premultiply alpha texture)
+                                layerColor.rgb /= layerColor.a;
+                            }
+                            if(paramsA.z > 2.0) {
+                                float a = max(0.05,1.0 - length(layerColor.xyz - CWhite.xyz));
+                                layerColor.rgb *= layerColor.rgb * layerColor.rgb;
+                                layerColor.a *= 1.0 - pow(abs(a), paramsA.z);
+                            } else if(paramsA.z > 0.0) {
+                                float a = (layerColor.r + layerColor.g + layerColor.b) * 0.333333333;
+                                layerColor.a *= 1.0 - pow(abs(a), paramsA.z);
                             }
 
-                            diffuseColor = mix( diffuseColor,layerColor, lum*paramsA.w * layerColor.a);
-
+                            diffuseColor = mix( diffuseColor,layerColor, layerColor.a * paramsA.w);
                         }
                     }
                 }
