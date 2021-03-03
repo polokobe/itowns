@@ -1,59 +1,55 @@
 import * as THREE from 'three';
-import LayerUpdateState from '../Core/Layer/LayerUpdateState';
-import CancelledCommandException from '../Core/Scheduler/CancelledCommandException';
-import ObjectRemovalHelper from './ObjectRemovalHelper';
+import LayerUpdateState from 'Layer/LayerUpdateState';
+import ObjectRemovalHelper from 'Process/ObjectRemovalHelper';
+import handlingError from 'Process/handlerNodeError';
+import Coordinates from 'Core/Geographic/Coordinates';
 
-function applyOffset(obj, offset) {
+const coord = new Coordinates('EPSG:4326', 0, 0, 0);
+const mat4 = new THREE.Matrix4();
+
+function applyMatrix4(obj, mat4) {
     if (obj.geometry) {
-        if (obj.geometry instanceof THREE.BufferGeometry) {
-            for (let i = 0; i < obj.geometry.attributes.position.count; i++) {
-                obj.geometry.attributes.position.array[3 * i] += offset.x;
-                obj.geometry.attributes.position.array[3 * i + 1] += offset.y;
-                obj.geometry.attributes.position.array[3 * i + 2] += offset.z;
-            }
-            obj.geometry.attributes.position.needsUpdate = true;
-        } else {
-            for (const v of obj.geometry.vertices) {
-                v.add(offset);
-            }
-            obj.geometry.verticesNeedUpdate = true;
-        }
+        obj.geometry.applyMatrix4(mat4);
     }
-    obj.children.forEach(c => applyOffset(c, offset));
+    obj.children.forEach(c => applyMatrix4(c, mat4));
+}
+
+function assignLayer(object, layer) {
+    if (object) {
+        object.layer = layer;
+        if (object.material) {
+            object.material.transparent = layer.opacity < 1.0;
+            object.material.opacity = layer.opacity;
+            object.material.wireframe = layer.wireframe;
+
+            if (layer.size) {
+                object.material.size = layer.size;
+            }
+            if (layer.linewidth) {
+                object.material.linewidth = layer.linewidth;
+            }
+        }
+        object.layers.set(layer.threejsLayer);
+        for (const c of object.children) {
+            assignLayer(c, layer);
+        }
+        return object;
+    }
+}
+
+function extentInsideSource(extent, source) {
+    return !source.extentInsideLimit(extent) ||
+        (source.isFileSource && !extent.isPointInside(source.extent.center(coord)));
 }
 
 export default {
     update(context, layer, node) {
         if (!node.parent && node.children.length) {
             // if node has been removed dispose three.js resource
-            ObjectRemovalHelper.removeChildrenAndCleanupRecursively(layer.id, node);
+            ObjectRemovalHelper.removeChildrenAndCleanupRecursively(layer, node);
             return;
         }
         if (!node.visible) {
-            return;
-        }
-
-        const features = node.children.filter(n => n.layer == layer.id);
-        for (const feat of features) {
-            feat.traverse((o) => {
-                if (o.material) {
-                    o.material.transparent = layer.opacity < 1.0;
-                    o.material.opacity = layer.opacity;
-                    o.material.wireframe = layer.wireframe;
-                    if (layer.size) {
-                        o.material.size = layer.size;
-                    }
-                    if (layer.linewidth) {
-                        o.material.linewidth = layer.linewidth;
-                    }
-                }
-            });
-        }
-        if (features.length > 0) {
-            return features;
-        }
-
-        if (!layer.tileInsideLimit(node, layer)) {
             return;
         }
 
@@ -61,58 +57,81 @@ export default {
             node.layerUpdateState[layer.id] = new LayerUpdateState();
         }
 
-        const ts = Date.now();
-
-        if (!node.layerUpdateState[layer.id].canTryUpdate(ts)) {
+        if (!node.layerUpdateState[layer.id].canTryUpdate()) {
             return;
+        }
+
+        const features = node.children.filter(n => n.layer == layer);
+
+        if (features.length > 0) {
+            return features;
+        }
+
+        const extentsDestination = node.getExtentsByProjection(layer.source.crs) || [node.extent];
+
+        const zoomDest = extentsDestination[0].zoom;
+
+        if (zoomDest != layer.zoom.min) {
+            node.layerUpdateState[layer.id].noMoreUpdatePossible();
+            return;
+        }
+
+        const extentsSource = [];
+        for (const extentDest of extentsDestination) {
+            const ext = layer.source.crs == extentDest.crs ? extentDest : extentDest.as(layer.source.crs);
+            ext.zoom = extentDest.zoom;
+            if (extentInsideSource(ext, layer.source)) {
+                node.layerUpdateState[layer.id].noMoreUpdatePossible();
+                return;
+            }
+            extentsSource.push(extentDest);
         }
 
         node.layerUpdateState[layer.id].newTry();
 
         const command = {
             layer,
+            extentsSource,
             view: context.view,
             threejsLayer: layer.threejsLayer,
             requester: node,
         };
 
-        context.scheduler.execute(command).then((result) => {
-            // if request return empty json, WFS_Provider.getFeatures return undefined
+        return context.scheduler.execute(command).then((result) => {
+            // if request return empty json, WFSProvider.getFeatures return undefined
+            result = result[0];
             if (result) {
+                const isApplied = !result.layer;
+                assignLayer(result, layer);
                 // call onMeshCreated callback if needed
                 if (layer.onMeshCreated) {
                     layer.onMeshCreated(result);
                 }
                 node.layerUpdateState[layer.id].success();
                 if (!node.parent) {
-                    ObjectRemovalHelper.removeChildrenAndCleanupRecursively(layer.id, result);
+                    ObjectRemovalHelper.removeChildrenAndCleanupRecursively(layer, result);
                     return;
                 }
                 // We don't use node.matrixWorld here, because feature coordinates are
                 // expressed in crs coordinates (which may be different than world coordinates,
                 // if node's layer is attached to an Object with a non-identity transformation)
-                const tmp = node.extent.center().as(context.view.referenceCrs).xyz().negate();
-                applyOffset(result, tmp);
+                if (isApplied) {
+                    // NOTE: now data source provider use cache on Mesh
+                    // TODO move transform in feature2Mesh
+                    mat4.copy(node.matrixWorld).invert().elements[14] -= result.minAltitude;
+                    applyMatrix4(result, mat4);
+                }
 
-                result.layer = layer.id;
+                if (result.minAltitude) {
+                    result.position.z = result.minAltitude;
+                }
+                result.layer = layer;
                 node.add(result);
                 node.updateMatrixWorld();
             } else {
                 node.layerUpdateState[layer.id].failure(1, true);
             }
         },
-        (err) => {
-            if (err instanceof CancelledCommandException) {
-                node.layerUpdateState[layer.id].success();
-            } else if (err instanceof SyntaxError) {
-                node.layerUpdateState[layer.id].failure(0, true);
-            } else {
-                node.layerUpdateState[layer.id].failure(Date.now());
-                setTimeout(node.layerUpdateState[layer.id].secondsUntilNextTry() * 1000,
-                    () => {
-                        context.view.notifyChange(false);
-                    });
-            }
-        });
+        err => handlingError(err, node, layer, node.level, context.view));
     },
 };

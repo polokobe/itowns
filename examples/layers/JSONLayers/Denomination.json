@@ -1,24 +1,19 @@
 {
-  "type": "color",
-  "url": "https://wxs.ign.fr/an7nvfzojv5wa96dsga5nk8w/geoportail/wmts",
-  "protocol": "wmts",
   "id": "Denomination",
   "title": "Geographical denomination in France",
   "visible": false,
   "opacity": 1,
   "transparent": true,
-  "updateStrategy": {
-    "type": "0",
-    "options": {}
-  },
-  "networkOptions": {
-    "crossOrigin": "omit"
-  },
-  "options": {
+  "source": {
+    "url": "https://wxs.ign.fr/3ht7xcw6f7nciopo16etuqp2/geoportail/wmts",
+    "crs": "EPSG:3857",
     "tileMatrixSet": "PM",
-    "mimetype": "image/png",
+    "format": "image/png",
     "name": "GEOGRAPHICALNAMES.NAMES",
     "style": "normal",
+    "networkOptions": {
+      "crossOrigin": "omit"
+    },
     "zoom": {
       "min": 6,
       "max": 20

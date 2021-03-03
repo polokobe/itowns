@@ -21,7 +21,7 @@ export const MAIN_LOOP_EVENTS = {
     UPDATE_START: 'update_start',
     BEFORE_CAMERA_UPDATE: 'before_camera_update',
     AFTER_CAMERA_UPDATE: 'after_camera_update',
-    BEFORE_LAYER_UPDATE: 'before_camera_update',
+    BEFORE_LAYER_UPDATE: 'before_layer_update',
     AFTER_LAYER_UPDATE: 'after_layer_update',
     BEFORE_RENDER: 'before_render',
     AFTER_RENDER: 'after_render',
@@ -63,14 +63,57 @@ function updateElements(context, geometryLayer, elements) {
         // and then update Debug.js:addGeometryLayerDebugFeatures
         const newElementsToUpdate = geometryLayer.update(context, geometryLayer, element);
 
-        // update attached layers
-        for (const attachedLayer of geometryLayer._attachedLayers) {
-            if (attachedLayer.ready) {
-                attachedLayer.update(context, attachedLayer, element);
+        const sub = geometryLayer.getObjectToUpdateForAttachedLayers(element);
+
+        if (sub) {
+            if (sub.element) {
+                if (__DEBUG__) {
+                    if (!(sub.element.isObject3D)) {
+                        throw new Error(`
+                            Invalid object for attached layer to update.
+                            Must be a THREE.Object and have a THREE.Material`);
+                    }
+                }
+                // update attached layers
+                for (const attachedLayer of geometryLayer.attachedLayers) {
+                    if (attachedLayer.ready) {
+                        attachedLayer.update(context, attachedLayer, sub.element, sub.parent);
+                        attachedLayer.cache.flush();
+                    }
+                }
+            } else if (sub.elements) {
+                for (let i = 0; i < sub.elements.length; i++) {
+                    if (!(sub.elements[i].isObject3D)) {
+                        throw new Error(`
+                            Invalid object for attached layer to update.
+                            Must be a THREE.Object and have a THREE.Material`);
+                    }
+                    // update attached layers
+                    for (const attachedLayer of geometryLayer.attachedLayers) {
+                        if (attachedLayer.ready) {
+                            attachedLayer.update(context, attachedLayer, sub.elements[i], sub.parent);
+                            attachedLayer.cache.flush();
+                        }
+                    }
+                }
             }
         }
         updateElements(context, geometryLayer, newElementsToUpdate);
     }
+}
+
+function filterChangeSources(updateSources, geometryLayer) {
+    let fullUpdate = false;
+    const filtered = new Set();
+    updateSources.forEach((src) => {
+        if (src === geometryLayer || src.isCamera) {
+            geometryLayer.info.clear();
+            fullUpdate = true;
+        } else if (src.layer === geometryLayer) {
+            filtered.add(src);
+        }
+    });
+    return fullUpdate ? new Set([geometryLayer]) : filtered;
 }
 
 MainLoop.prototype._update = function _update(view, updateSources, dt) {
@@ -81,17 +124,38 @@ MainLoop.prototype._update = function _update(view, updateSources, dt) {
         view,
     };
 
+    // replace layer with their parent where needed
+    updateSources.forEach((src) => {
+        const layer = src.layer || src;
+        if (layer.isLayer && layer.parent) {
+            updateSources.add(layer.parent);
+        }
+    });
+
     for (const geometryLayer of view.getLayers((x, y) => !y)) {
         context.geometryLayer = geometryLayer;
-        if (geometryLayer.ready && geometryLayer.visible) {
+        if (geometryLayer.ready && geometryLayer.visible && !geometryLayer.frozen) {
             view.execFrameRequesters(MAIN_LOOP_EVENTS.BEFORE_LAYER_UPDATE, dt, this._updateLoopRestarted, geometryLayer);
 
-            // `preUpdate` returns an array of elements to update
-            const elementsToUpdate = geometryLayer.preUpdate(context, geometryLayer, updateSources);
-            // `update` is called in `updateElements`.
-            updateElements(context, geometryLayer, elementsToUpdate);
-            // `postUpdate` is called when this geom layer update process is finished
-            geometryLayer.postUpdate(context, geometryLayer, updateSources);
+            // Filter updateSources that are relevant for the geometryLayer
+            const srcs = filterChangeSources(updateSources, geometryLayer);
+            if (srcs.size > 0) {
+                // pre update attached layer
+                for (const attachedLayer of geometryLayer.attachedLayers) {
+                    if (attachedLayer.ready && attachedLayer.preUpdate) {
+                        attachedLayer.preUpdate(context, srcs);
+                    }
+                }
+                // `preUpdate` returns an array of elements to update
+                const elementsToUpdate = geometryLayer.preUpdate(context, srcs);
+                // `update` is called in `updateElements`.
+                updateElements(context, geometryLayer, elementsToUpdate);
+                // `postUpdate` is called when this geom layer update process is finished
+                geometryLayer.postUpdate(context, geometryLayer, updateSources);
+            }
+
+            // Clear the cache of expired resources
+            geometryLayer.cache.flush();
 
             view.execFrameRequesters(MAIN_LOOP_EVENTS.AFTER_LAYER_UPDATE, dt, this._updateLoopRestarted, geometryLayer);
         }
@@ -99,10 +163,12 @@ MainLoop.prototype._update = function _update(view, updateSources, dt) {
 };
 
 MainLoop.prototype._step = function _step(view, timestamp) {
+    const dt = timestamp - this._lastTimestamp;
+    view._executeFrameRequestersRemovals();
+
     view.execFrameRequesters(MAIN_LOOP_EVENTS.UPDATE_START, dt, this._updateLoopRestarted);
 
     const willRedraw = this.needsRedraw;
-    const dt = timestamp - this._lastTimestamp;
     this._lastTimestamp = timestamp;
 
     // Reset internal state before calling _update (so future calls to View.notifyChange()

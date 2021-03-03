@@ -1,490 +1,261 @@
-/*
- * To change this license header, choose License Headers in Project Properties.
- * To change this template file, choose Tools | Templates
- * and open the template in the editor.
- */
-
-
 import * as THREE from 'three';
-import TileVS from './Shader/TileVS.glsl';
-import TileFS from './Shader/TileFS.glsl';
-import pitUV from './Shader/Chunk/pitUV.glsl';
-import PrecisionQualifier from './Shader/Chunk/PrecisionQualifier.glsl';
-import Capabilities from '../Core/System/Capabilities';
-import { l_COLOR, l_ELEVATION, EMPTY_TEXTURE_ZOOM } from './LayeredMaterialConstants';
+import TileVS from 'Renderer/Shader/TileVS.glsl';
+import TileFS from 'Renderer/Shader/TileFS.glsl';
+import ShaderUtils from 'Renderer/Shader/ShaderUtils';
+import Capabilities from 'Core/System/Capabilities';
+import RenderMode from 'Renderer/RenderMode';
+import CommonMaterial from 'Renderer/CommonMaterial';
 
-var emptyTexture = new THREE.Texture();
-emptyTexture.coords = { zoom: EMPTY_TEXTURE_ZOOM };
-
-const layerTypesCount = 2;
-var vector4 = new THREE.Vector4(0.0, 0.0, 0.0, 0.0);
-var fooTexture;
+const identityOffsetScale = new THREE.Vector4(0.0, 0.0, 1.0, 1.0);
+const defaultTex = THREE.Texture();
 
 // from three.js packDepthToRGBA
 const UnpackDownscale = 255 / 256; // 0..1 -> fraction (excluding 1)
+const bitSh = new THREE.Vector4(
+    UnpackDownscale / (256.0 * 256.0 * 256.0),
+    UnpackDownscale / (256.0 * 256.0),
+    UnpackDownscale / 256.0,
+    UnpackDownscale);
+
 export function unpack1K(color, factor) {
-    var bitSh = new THREE.Vector4(
-        UnpackDownscale / (256.0 * 256.0 * 256.0),
-        UnpackDownscale / (256.0 * 256.0),
-        UnpackDownscale / 256.0,
-        UnpackDownscale);
     return factor ? bitSh.dot(color) * factor : bitSh.dot(color);
 }
 
-var getColorAtIdUv = function getColorAtIdUv(nbTex) {
-    if (!fooTexture) {
-        fooTexture = 'vec4 colorAtIdUv(sampler2D dTextures[TEX_UNITS],vec4 offsetScale[TEX_UNITS],int id, vec2 uv){\n';
-        fooTexture += ' if (id == 0) return texture2D(dTextures[0],  pitUV(uv,offsetScale[0]));\n';
+// Max sampler color count to LayeredMaterial
+// Because there's a statement limitation to unroll, in getColorAtIdUv method
+const maxSamplersColorCount = 15;
+const samplersElevationCount = 1;
 
-        for (var l = 1; l < nbTex; l++) {
-            var sL = l.toString();
-            fooTexture += `    else if (id == ${sL}) return texture2D(dTextures[${sL}],  pitUV(uv,offsetScale[${sL}]));\n`;
+export function getMaxColorSamplerUnitsCount() {
+    const maxSamplerUnitsCount = Capabilities.getMaxTextureUnitsCount();
+    return Math.min(maxSamplerUnitsCount - samplersElevationCount, maxSamplersColorCount);
+}
+
+const defaultStructLayer = {
+    bias: 0,
+    zmin: 0,
+    zmax: 0,
+    scale: 0,
+    mode: 0,
+    textureOffset: 0,
+    opacity: 0,
+    crs: 0,
+    effect: 0,
+};
+
+function updateLayersUniforms(uniforms, olayers, max) {
+    // prepare convenient access to elevation or color uniforms
+    const layers = uniforms.layers.value;
+    const textures = uniforms.textures.value;
+    const offsetScales = uniforms.offsetScales.value;
+    const textureCount = uniforms.textureCount;
+
+    // flatten the 2d array [i,j] -> layers[_layerIds[i]].textures[j]
+    let count = 0;
+    for (const layer of olayers) {
+        // textureOffset property is added to RasterTile
+        layer.textureOffset = count;
+        for (let i = 0, il = layer.textures.length; i < il; ++i, ++count) {
+            if (count < max) {
+                offsetScales[count] = layer.offsetScales[i];
+                textures[count] = layer.textures[i];
+                layers[count] = layer;
+            }
+        }
+    }
+    if (count > max) {
+        console.warn(`LayeredMaterial: Not enough texture units (${max} < ${count}), excess textures have been discarded.`);
+    }
+    textureCount.value = count;
+
+    // WebGL 2.0 doesn't support the undefined uniforms.
+    // So the undefined uniforms are defined by default value.
+    for (let i = count; i < textures.length; i++) {
+        textures[i] = defaultTex;
+        offsetScales[i] = identityOffsetScale;
+        layers[i] = defaultStructLayer;
+    }
+}
+
+export const ELEVATION_MODES = {
+    RGBA: 0,
+    COLOR: 1,
+    DATA: 2,
+};
+
+let nbSamplers;
+const fragmentShader = [];
+class LayeredMaterial extends THREE.RawShaderMaterial {
+    constructor(options = {}, crsCount) {
+        super(options);
+
+        nbSamplers = nbSamplers || [samplersElevationCount, getMaxColorSamplerUnitsCount()];
+
+        this.defines.NUM_VS_TEXTURES = nbSamplers[0];
+        this.defines.NUM_FS_TEXTURES = nbSamplers[1];
+        this.defines.USE_FOG = 1;
+        this.defines.NUM_CRS = crsCount;
+
+        CommonMaterial.setDefineMapping(this, 'ELEVATION', ELEVATION_MODES);
+        CommonMaterial.setDefineMapping(this, 'MODE', RenderMode.MODES);
+        CommonMaterial.setDefineProperty(this, 'mode', 'MODE', RenderMode.MODES.FINAL);
+
+        if (__DEBUG__) {
+            this.defines.DEBUG = 1;
+            const outlineColors = [new THREE.Vector3(1.0, 0.0, 0.0)];
+            if (crsCount > 1) {
+                outlineColors.push(new THREE.Vector3(1.0, 0.5, 0.0));
+            }
+            CommonMaterial.setUniformProperty(this, 'showOutline', true);
+            CommonMaterial.setUniformProperty(this, 'outlineWidth', 0.008);
+            CommonMaterial.setUniformProperty(this, 'outlineColors', outlineColors);
         }
 
-        fooTexture += 'else return vec4(0.0,0.0,0.0,0.0);}\n';
-    }
+        if (Capabilities.isLogDepthBufferSupported()) {
+            this.defines.USE_LOGDEPTHBUF = 1;
+            this.defines.USE_LOGDEPTHBUF_EXT = 1;
+        }
 
-    return fooTexture;
-};
+        this.vertexShader = TileVS;
+        fragmentShader[crsCount] = fragmentShader[crsCount] || ShaderUtils.unrollLoops(TileFS, this.defines);
+        this.fragmentShader = fragmentShader[crsCount];
 
-// Array not suported in IE
-var fillArray = function fillArray(array, remp) {
-    for (var i = 0; i < array.length; i++)
-        { array[i] = remp; }
-};
+        // Color uniforms
+        CommonMaterial.setUniformProperty(this, 'diffuse', new THREE.Color(0.04, 0.23, 0.35));
+        CommonMaterial.setUniformProperty(this, 'opacity', this.opacity);
 
-var moveElementArray = function moveElementArray(array, oldIndex, newIndex)
-{
-    array.splice(newIndex, 0, array.splice(oldIndex, 1)[0]);
-};
+        // Lighting uniforms
+        CommonMaterial.setUniformProperty(this, 'lightingEnabled', false);
+        CommonMaterial.setUniformProperty(this, 'lightPosition', new THREE.Vector3(-0.5, 0.0, 1.0));
 
-/* eslint-disable */
-var moveElementsArraySafe = function moveElementsArraySafe(array,index, howMany, toIndex) {
-    index = parseInt(index) || 0;
-    index = index < 0 ? array.length + index : index;
-    toIndex = parseInt(toIndex) || 0;
-    toIndex = toIndex < 0 ? array.length + toIndex : toIndex;
-    if((toIndex > index) && (toIndex <= index + howMany)) {
-        toIndex = index + howMany;
-    }
+        // Misc properties
+        CommonMaterial.setUniformProperty(this, 'fogDistance', 1000000000.0);
+        CommonMaterial.setUniformProperty(this, 'fogColor', new THREE.Color(0.76, 0.85, 1.0));
+        CommonMaterial.setUniformProperty(this, 'overlayAlpha', 0);
+        CommonMaterial.setUniformProperty(this, 'overlayColor', new THREE.Color(1.0, 0.3, 0.0));
+        CommonMaterial.setUniformProperty(this, 'objectId', 0);
 
-    var moved;
-    array.splice.apply(array, [toIndex, 0].concat(moved = array.splice(index, howMany)));
-    return moved;
-};
-/* eslint-enable */
+        // > 0 produces gaps,
+        // < 0 causes oversampling of textures
+        // = 0 causes sampling artefacts due to bad estimation of texture-uv gradients
+        // best is a small negative number
+        CommonMaterial.setUniformProperty(this, 'minBorderDistance', -0.01);
 
-const LayeredMaterial = function LayeredMaterial(options) {
-    THREE.RawShaderMaterial.call(this);
+        // LayeredMaterialLayers
+        this.layers = [];
+        this.elevationLayerIds = [];
+        this.colorLayerIds = [];
 
-    const maxTexturesUnits = Capabilities.getMaxTextureUnitsCount();
-    const nbSamplers = Math.min(maxTexturesUnits - 1, 16 - 1);
-    this.vertexShader = TileVS;
+        // elevation layer uniforms, to be updated using updateUniforms()
+        this.uniforms.elevationLayers = new THREE.Uniform(new Array(nbSamplers[0]).fill(defaultStructLayer));
+        this.uniforms.elevationTextures = new THREE.Uniform(new Array(nbSamplers[0]).fill(defaultTex));
+        this.uniforms.elevationOffsetScales = new THREE.Uniform(new Array(nbSamplers[0]).fill(identityOffsetScale));
+        this.uniforms.elevationTextureCount = new THREE.Uniform(0);
 
-    this.fragmentShaderHeader = `${PrecisionQualifier}\nconst int   TEX_UNITS   = ${nbSamplers.toString()};\n`;
-    this.fragmentShaderHeader += pitUV;
+        // color layer uniforms, to be updated using updateUniforms()
+        this.uniforms.colorLayers = new THREE.Uniform(new Array(nbSamplers[1]).fill(defaultStructLayer));
+        this.uniforms.colorTextures = new THREE.Uniform(new Array(nbSamplers[1]).fill(defaultTex));
+        this.uniforms.colorOffsetScales = new THREE.Uniform(new Array(nbSamplers[1]).fill(identityOffsetScale));
+        this.uniforms.colorTextureCount = new THREE.Uniform(0);
 
-    if (__DEBUG__) {
-        this.fragmentShaderHeader += '#define DEBUG\n';
-    }
-
-    options = options || { };
-    let vsOptions = '';
-    if (options.useRgbaTextureElevation) {
-        throw new Error('Restore this feature');
-    } else if (options.useColorTextureElevation) {
-        vsOptions = '\n#define COLOR_TEXTURE_ELEVATION\n';
-        vsOptions += `\nconst float _minElevation = ${options.colorTextureElevationMinZ.toFixed(1)};\n`;
-        vsOptions += `\nconst float _maxElevation = ${options.colorTextureElevationMaxZ.toFixed(1)};\n`;
-    } else {
-        // default
-        vsOptions = '\n#define DATA_TEXTURE_ELEVATION\n';
-    }
-
-    // see GLOBE FS
-    this.fragmentShaderHeader += getColorAtIdUv(nbSamplers);
-
-    this.fragmentShader = this.fragmentShaderHeader + TileFS;
-    this.vertexShader = PrecisionQualifier + vsOptions + TileVS;
-
-    // handle on textures uniforms
-    this.textures = [];
-    // handle on textures offsetScale uniforms
-    this.offsetScale = [];
-    // handle Loaded textures count by layer's type uniforms
-    this.loadedTexturesCount = [0, 0];
-
-    // Uniform three js needs no empty array
-    // WARNING TODO: prevent empty slot, but it's not the solution
-    this.offsetScale[l_COLOR] = Array(nbSamplers);
-    this.offsetScale[l_ELEVATION] = [vector4];
-    fillArray(this.offsetScale[l_COLOR], vector4);
-
-    this.textures[l_ELEVATION] = [emptyTexture];
-    this.textures[l_COLOR] = Array(nbSamplers);
-    var paramLayers = Array(8);
-    this.layerTexturesCount = Array(8);
-
-    fillArray(this.textures[l_COLOR], emptyTexture);
-    fillArray(paramLayers, vector4);
-    fillArray(this.layerTexturesCount, 0);
-
-    // Elevation texture
-    this.uniforms.dTextures_00 = new THREE.Uniform(this.textures[l_ELEVATION]);
-
-    // Color textures's layer
-    this.uniforms.dTextures_01 = new THREE.Uniform(this.textures[l_COLOR]);
-
-    // Visibility layer
-    this.uniforms.visibility = new THREE.Uniform([true, true, true, true, true, true, true, true]);
-
-    // Loaded textures count by layer's type
-    this.uniforms.loadedTexturesCount = new THREE.Uniform(this.loadedTexturesCount);
-
-    // Count color layers
-    this.uniforms.colorLayersCount = new THREE.Uniform(1);
-
-    // Layer setting
-    // Offset color texture slot | Projection | fx | Opacity
-    this.uniforms.paramLayers = new THREE.Uniform(paramLayers);
-
-    // Elevation texture cropping
-    this.uniforms.offsetScale_L00 = new THREE.Uniform(this.offsetScale[l_ELEVATION]);
-
-    // Color texture cropping
-    this.uniforms.offsetScale_L01 = new THREE.Uniform(this.offsetScale[l_COLOR]);
-
-    // Light position
-    this.uniforms.lightPosition = new THREE.Uniform(new THREE.Vector3(-0.5, 0.0, 1.0));
-
-    this.uniforms.distanceFog = new THREE.Uniform(1000000000.0);
-
-    this.uniforms.uuid = new THREE.Uniform(0);
-
-    this.uniforms.selected = new THREE.Uniform(false);
-
-    this.uniforms.lightingEnabled = new THREE.Uniform(false);
-
-    this.uniforms.noTextureColor = new THREE.Uniform(new THREE.Color(0.04, 0.23, 0.35));
-
-    this.uniforms.opacity = new THREE.Uniform(1.0);
-
-    this.colorLayersId = [];
-    this.elevationLayersId = [];
-
-    if (Capabilities.isLogDepthBufferSupported()) {
-        this.defines = {
-            USE_LOGDEPTHBUF: 1,
-            USE_LOGDEPTHBUF_EXT: 1,
-        };
-    } else {
-        this.defines = {};
-    }
-
-    if (__DEBUG__) {
-        this.checkLayersConsistency = function checkLayersConsistency(node, imageryLayers) {
-            for (const layer of imageryLayers) {
-                const index = this.indexOfColorLayer(layer.id);
-                if (index < 0) {
-                    continue;
+        let _visible = this.visible;
+        // can't do an ES6 setter/getter here
+        Object.defineProperty(this, 'visible', {
+            get() { return _visible; },
+            set(v) {
+                if (_visible != v) {
+                    _visible = v;
+                    this.dispatchEvent({ type: v ? 'shown' : 'hidden' });
                 }
+            },
+        });
+    }
 
-                const offset = this.getTextureOffsetByLayerIndex(index);
-                const count = this.getTextureCountByLayerIndex(index);
-                let total = 0;
-                for (let i = 0; i < this.loadedTexturesCount[1]; i++) {
-                    if (!this.uniforms.dTextures_01.value[i].image) {
-                        throw new Error(`${node.id} - Missing texture at index ${i} for layer ${layer.id}`);
-                    }
+    onBeforeCompile(shader, renderer) {
+        if (renderer.capabilities.isWebGL2) {
+            this.defines.WEBGL2 = true;
+            shader.glslVersion = '300 es';
+        }
+    }
 
-                    const critere1 = (offset <= i && i < (offset + count));
-                    const search = layer.name ? `LAYERS=${layer.name}&` : `LAYER=${layer.options.name}&`;
-                    const critere2 = this.uniforms.dTextures_01.value[i].image.currentSrc.indexOf(search) > 0;
-
-                    if (critere1 && !critere2) {
-                        throw new Error(`${node.id} - Texture should belong to ${layer.id} but comes from ${this.uniforms.dTextures_01.value[i].image.currentSrc}`);
-                    } else if (!critere1 && critere2) {
-                        throw new Error(`${node.id} - Texture shouldn't belong to ${layer.id}`);
-                    } else if (critere1) {
-                        total++;
-                    }
-                }
-                if (total != count) {
-                    throw new Error(`${node.id} - Invalid total texture count. Found: ${total}, expected: ${count} for ${layer.id}`);
-                }
-            }
+    getUniformByType(type) {
+        return {
+            layers: this.uniforms[`${type}Layers`],
+            textures: this.uniforms[`${type}Textures`],
+            offsetScales: this.uniforms[`${type}OffsetScales`],
+            textureCount: this.uniforms[`${type}TextureCount`],
         };
     }
-};
 
-LayeredMaterial.prototype = Object.create(THREE.RawShaderMaterial.prototype);
-LayeredMaterial.prototype.constructor = LayeredMaterial;
+    updateLayersUniforms() {
+        const colorlayers = this.layers.filter(l => this.colorLayerIds.includes(l.id) && l.visible && l.opacity > 0);
+        colorlayers.sort((a, b) => this.colorLayerIds.indexOf(a.id) - this.colorLayerIds.indexOf(b.id));
+        updateLayersUniforms(this.getUniformByType('color'), colorlayers, this.defines.NUM_FS_TEXTURES);
 
-LayeredMaterial.prototype.dispose = function dispose() {
-    // TODO: WARNING  verify if textures to dispose aren't attached with ancestor
-
-    this.dispatchEvent({
-        type: 'dispose',
-    });
-
-    for (let l = 0; l < layerTypesCount; l++) {
-        for (let i = 0, max = this.textures[l].length; i < max; i++) {
-            if (this.textures[l][i] instanceof THREE.Texture) {
-                this.textures[l][i].dispose();
-            }
+        if (this.elevationLayerIds.some(id => this.getLayer(id)) ||
+            (this.uniforms.elevationTextureCount.value && !this.elevationLayerIds.length)) {
+            const elevationLayer = this.getElevationLayer() ? [this.getElevationLayer()] : [];
+            updateLayersUniforms(this.getUniformByType('elevation'), elevationLayer, this.defines.NUM_VS_TEXTURES);
         }
-    }
-};
-
-LayeredMaterial.prototype.setSequence = function setSequence(sequenceLayer) {
-    let offsetLayer = 0;
-    let offsetTexture = 0;
-
-    const originalOffsets = new Array(...this.uniforms.offsetScale_L01.value);
-    const originalTextures = new Array(...this.uniforms.dTextures_01.value);
-
-    for (let l = 0; l < sequenceLayer.length; l++) {
-        const layer = sequenceLayer[l];
-        const oldIndex = this.indexOfColorLayer(layer);
-        if (oldIndex > -1) {
-            const newIndex = l - offsetLayer;
-            const texturesCount = this.layerTexturesCount[oldIndex];
-
-            // individual values are swapped in place
-            if (newIndex !== oldIndex) {
-                moveElementArray(this.colorLayersId, oldIndex, newIndex);
-                moveElementArray(this.layerTexturesCount, oldIndex, newIndex);
-                moveElementArray(this.uniforms.paramLayers.value, oldIndex, newIndex);
-                moveElementArray(this.uniforms.visibility.value, oldIndex, newIndex);
-            }
-            const oldOffset = this.getTextureOffsetByLayerIndex(newIndex);
-            // consecutive values are copied from original
-            for (let i = 0; i < texturesCount; i++) {
-                this.uniforms.offsetScale_L01.value[offsetTexture + i] = originalOffsets[oldOffset + i];
-                this.uniforms.dTextures_01.value[offsetTexture + i] = originalTextures[oldOffset + i];
-            }
-
-
-            this.setTextureOffsetByLayerIndex(newIndex, offsetTexture);
-            offsetTexture += texturesCount;
-        } else {
-            offsetLayer++;
-        }
+        this.layersNeedUpdate = false;
     }
 
-    this.uniforms.colorLayersCount.value = this.getColorLayersCount();
-};
-
-LayeredMaterial.prototype.removeColorLayer = function removeColorLayer(layer) {
-    const layerIndex = this.indexOfColorLayer(layer);
-
-    if (layerIndex === -1) {
-        return;
+    dispose() {
+        this.dispatchEvent({ type: 'dispose' });
+        this.layers.forEach(l => l.dispose(true));
+        this.layers.length = 0;
+        this.layersNeedUpdate = true;
     }
 
-    const offset = this.getTextureOffsetByLayerIndex(layerIndex);
-    const texturesCount = this.getTextureCountByLayerIndex(layerIndex);
-
-    // remove layer
-    this.colorLayersId.splice(layerIndex, 1);
-    this.uniforms.colorLayersCount.value = this.getColorLayersCount();
-
-    // remove nb textures
-    this.layerTexturesCount.splice(layerIndex, 1);
-    this.layerTexturesCount.push(0);
-
-    // Remove Layers Parameters
-    this.uniforms.paramLayers.value.splice(layerIndex, 1);
-    this.uniforms.paramLayers.value.push(vector4);
-
-    // Remove visibility Parameters
-    this.uniforms.visibility.value.splice(layerIndex, 1);
-    this.uniforms.visibility.value.push(true);
-
-    // Dispose Layers textures
-    for (let i = offset, max = offset + texturesCount; i < max; i++) {
-        if (this.textures[l_COLOR][i] instanceof THREE.Texture) {
-            this.textures[l_COLOR][i].dispose();
-        }
+    // TODO: rename to setColorLayerIds and add setElevationLayerIds ?
+    setSequence(sequenceLayer) {
+        this.colorLayerIds = sequenceLayer;
+        this.layersNeedUpdate = true;
     }
 
-    const removedTexturesLayer = this.textures[l_COLOR].splice(offset, texturesCount);
-    this.offsetScale[l_COLOR].splice(offset, texturesCount);
-
-    const loadedTexturesLayerCount = removedTexturesLayer.reduce((sum, texture) => sum + (texture.coords.zoom > EMPTY_TEXTURE_ZOOM), 0);
-
-    // refill remove textures
-    for (let i = 0, max = texturesCount; i < max; i++) {
-        this.textures[l_COLOR].push(emptyTexture);
-        this.offsetScale[l_COLOR].push(vector4);
+    setSequenceElevation(layerId) {
+        this.elevationLayerIds[0] = layerId;
+        this.layersNeedUpdate = true;
     }
 
-    // Update slot start texture layer
-    for (let j = layerIndex, mx = this.getColorLayersCount(); j < mx; j++) {
-        this.uniforms.paramLayers.value[j].x -= texturesCount;
-    }
-
-    this.loadedTexturesCount[l_COLOR] -= loadedTexturesLayerCount;
-
-    this.uniforms.offsetScale_L01.value = this.offsetScale[l_COLOR];
-    this.uniforms.dTextures_01.value = this.textures[l_COLOR];
-};
-
-LayeredMaterial.prototype.setTexturesLayer = function setTexturesLayer(textures, layerType, layer) {
-    const index = this.indexOfColorLayer(layer);
-    const slotOffset = this.getTextureOffsetByLayerIndex(index);
-    for (let i = 0, max = textures.length; i < max; i++) {
-        if (textures[i]) {
-            if (textures[i].texture !== null) {
-                this.setTexture(textures[i].texture, layerType, i + (slotOffset || 0), textures[i].pitch);
+    removeLayer(layerId) {
+        const index = this.layers.findIndex(l => l.id === layerId);
+        if (index > -1) {
+            this.layers[index].dispose();
+            this.layers.splice(index, 1);
+            const idSeq = this.colorLayerIds.indexOf(layerId);
+            if (idSeq > -1) {
+                this.colorLayerIds.splice(idSeq, 1);
             } else {
-                this.setLayerVisibility(index, false);
-                break;
+                this.elevationLayerIds = [];
             }
         }
     }
-};
 
-LayeredMaterial.prototype.setTexture = function setTexture(texture, layerType, slot, offsetScale) {
-    if (this.textures[layerType][slot] === undefined || this.textures[layerType][slot].image === undefined) {
-        this.loadedTexturesCount[layerType] += 1;
+    addLayer(rasterNode) {
+        if (rasterNode.layer.id in this.layers) {
+            console.warn('The "{layer.id}" layer was already present in the material, overwritting.');
+        }
+        this.layers.push(rasterNode);
     }
 
-    // BEWARE: array [] -> size: 0; array [10]="wao" -> size: 11
-    this.textures[layerType][slot] = texture || emptyTexture;
-    this.offsetScale[layerType][slot] = offsetScale || new THREE.Vector4(0.0, 0.0, 1.0, 1.0);
-};
+    getLayer(id) {
+        return this.layers.find(l => l.id === id);
+    }
 
-LayeredMaterial.prototype.setColorLayerParameters = function setColorLayerParameters(params) {
-    if (this.getColorLayersCount() === 0) {
-        for (let l = 0; l < params.length; l++) {
-            this.pushLayer(params[l]);
+    getLayers(ids) {
+        return this.layers.filter(l => ids.includes(l.id));
+    }
+
+    getElevationLayer() {
+        return this.layers.find(l => l.id === this.elevationLayerIds[0]);
+    }
+
+    setElevationScale(scale) {
+        if (this.elevationLayerIds.length) {
+            this.getElevationLayer().scale = scale;
         }
     }
-};
-
-LayeredMaterial.prototype.pushLayer = function pushLayer(param) {
-    const newIndex = this.getColorLayersCount();
-    const offset = newIndex === 0 ? 0 : this.getTextureOffsetByLayerIndex(newIndex - 1) + this.getTextureCountByLayerIndex(newIndex - 1);
-
-    this.uniforms.paramLayers.value[newIndex] = new THREE.Vector4();
-
-    this.setTextureOffsetByLayerIndex(newIndex, offset);
-    this.setLayerUV(newIndex, param.tileMT.includes('PM') ? param.texturesCount : 0);
-    this.setLayerFx(newIndex, param.fx);
-    this.setLayerOpacity(newIndex, param.opacity);
-    this.setLayerVisibility(newIndex, param.visible);
-    this.setLayerTexturesCount(newIndex, param.texturesCount);
-    this.colorLayersId.push(param.idLayer);
-
-    this.uniforms.colorLayersCount.value = this.getColorLayersCount();
-};
-
-LayeredMaterial.prototype.indexOfColorLayer = function indexOfColorLayer(layerId) {
-    return this.colorLayersId.indexOf(layerId);
-};
-
-LayeredMaterial.prototype.getColorLayersCount = function getColorLayersCount() {
-    return this.colorLayersId.length;
-};
-
-LayeredMaterial.prototype.getTextureOffsetByLayerIndex = function getTextureOffsetByLayerIndex(index) {
-    return this.uniforms.paramLayers.value[index].x;
-};
-
-LayeredMaterial.prototype.getTextureCountByLayerIndex = function getTextureCountByLayerIndex(index) {
-    return this.layerTexturesCount[index];
-};
-
-LayeredMaterial.prototype.getLayerTextureOffset = function getLayerTextureOffset(layerId) {
-    const index = this.indexOfColorLayer(layerId);
-    return index > -1 ? this.getTextureOffsetByLayerIndex(index) : -1;
-};
-
-LayeredMaterial.prototype.setLightingOn = function setLightingOn(enable) {
-    this.uniforms.lightingEnabled.value = enable;
-};
-
-LayeredMaterial.prototype.setLayerFx = function setLayerFx(index, fx) {
-    this.uniforms.paramLayers.value[index].z = fx;
-};
-
-LayeredMaterial.prototype.setTextureOffsetByLayerIndex = function setTextureOffsetByLayerIndex(index, offset) {
-    this.uniforms.paramLayers.value[index].x = offset;
-};
-
-LayeredMaterial.prototype.setLayerUV = function setLayerUV(index, idUV) {
-    this.uniforms.paramLayers.value[index].y = idUV;
-};
-
-LayeredMaterial.prototype.getLayerUV = function setLayerUV(index) {
-    return this.uniforms.paramLayers.value[index].y;
-};
-
-LayeredMaterial.prototype.setLayerOpacity = function setLayerOpacity(index, opacity) {
-    if (this.uniforms.paramLayers.value[index])
-        { this.uniforms.paramLayers.value[index].w = opacity; }
-};
-
-LayeredMaterial.prototype.setLayerVisibility = function setLayerVisibility(index, visible) {
-    this.uniforms.visibility.value[index] = visible;
-};
-
-LayeredMaterial.prototype.setLayerTexturesCount = function setLayerTexturesCount(index, count) {
-    this.layerTexturesCount[index] = count;
-};
-
-LayeredMaterial.prototype.getLoadedTexturesCount = function getLoadedTexturesCount() {
-    return this.loadedTexturesCount[l_ELEVATION] + this.loadedTexturesCount[l_COLOR];
-};
-
-LayeredMaterial.prototype.isColorLayerDownscaled = function isColorLayerDownscaled(layerId, zoom) {
-    return this.textures[l_COLOR][this.getLayerTextureOffset(layerId)] &&
-        this.textures[l_COLOR][this.getLayerTextureOffset(layerId)].coords.zoom < zoom;
-};
-
-LayeredMaterial.prototype.getColorLayerLevelById = function getColorLayerLevelById(colorLayerId) {
-    const index = this.indexOfColorLayer(colorLayerId);
-    if (index === -1) {
-        return EMPTY_TEXTURE_ZOOM;
-    }
-    const slot = this.getTextureOffsetByLayerIndex(index);
-    const texture = this.textures[l_COLOR][slot];
-
-    return texture ? texture.coords.zoom : EMPTY_TEXTURE_ZOOM;
-};
-
-LayeredMaterial.prototype.getElevationLayerLevel = function getElevationLayerLevel() {
-    return this.textures[l_ELEVATION][0].coords.zoom;
-};
-
-LayeredMaterial.prototype.getLayerTextures = function getLayerTextures(layerType, layerId) {
-    if (layerType === l_ELEVATION) {
-        return this.textures[l_ELEVATION];
-    }
-
-    const index = this.indexOfColorLayer(layerId);
-
-    if (index !== -1) {
-        const count = this.getTextureCountByLayerIndex(index);
-        const textureIndex = this.getTextureOffsetByLayerIndex(index);
-        return this.textures[l_COLOR].slice(textureIndex, textureIndex + count);
-    } else {
-        throw new Error(`Invalid layer id "${layerId}"`);
-    }
-};
-
-LayeredMaterial.prototype.setUuid = function setUuid(uuid) {
-    this.uniforms.uuid.value = uuid;
-};
-
-LayeredMaterial.prototype.setFogDistance = function setFogDistance(df) {
-    this.uniforms.distanceFog.value = df;
-};
-
-LayeredMaterial.prototype.setSelected = function setSelected(selected) {
-    this.uniforms.selected.value = selected;
-};
-
+}
 
 export default LayeredMaterial;

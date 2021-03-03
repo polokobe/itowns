@@ -1,0 +1,134 @@
+{
+    "opts": {
+        "recurse": true,
+        "template": "docs/",
+        "destination": "docs/out/",
+        "tutorials": "docs/tutorials/",
+        "navigation": {
+            "Base": [
+                "Cache",
+                "Scheduler",
+                "TileMesh",
+                "Feature",
+                "FeatureGeometry",
+                "FeatureCollection",
+                "FeatureBuildingOptions",
+                "Style",
+                "Label"
+            ],
+
+            "View": [
+                "View",
+                "GlobeView",
+                "PlanarView"
+            ],
+
+            "Geographic": [
+                "Coordinates",
+                "CRS",
+                "Extent",
+                "OrientationUtils",
+                "OBB",
+                "DEMUtils"
+            ],
+
+            "Layer": [
+                "Layer",
+                "ColorLayer",
+                "ElevationLayer",
+                "GeometryLayer",
+                "TiledGeometryLayer",
+                "InfoTiledGeometryLayer",
+                "ColorLayersOrdering",
+                "OrientedImageLayer",
+                "PointCloudLayer",
+                "PotreeLayer",
+                "C3DTilesLayer",
+                "LabelLayer",
+                "RasterNode",
+
+                "GlobeLayer",
+                "PlanarLayer"
+            ],
+
+            "Points": [
+                "PointsMaterial",
+                "Classification"
+            ],
+
+            "Source": [
+                "InformationsData",
+                "ParsingOptions",
+                "Source",
+                "WMTSSource",
+                "WMSSource",
+                "WFSSource",
+                "TMSSource",
+                "FileSource",
+                "OrientedImageSource",
+                "PotreeSource",
+                "VectorTilesSource"
+            ],
+
+            "Provider": [
+                "URLBuilder",
+                "Fetcher"
+            ],
+
+            "Parser": [
+                "GeoJsonParser",
+                "GpxParser",
+                "VectorTileParser",
+                "CameraCalibrationParser",
+                "B3dmParser",
+                "ShapefileParser",
+                "LASParser"
+            ],
+
+            "Converter": [
+                "Feature2Mesh"
+            ],
+
+            "Controls": [
+                "GlobeControls",
+                "StateControl",
+                "PlanarControls",
+                "FirstPersonControls",
+                "StreetControls",
+                "OrientedImageCamera",
+                "CameraUtils"
+            ],
+
+            "Renderer": [
+                "OrientedImageMaterial",
+                "Camera"
+            ],
+
+            "3D Tiles": [
+                "C3DTileset",
+                "C3DTBatchTable",
+                "C3DTBoundingVolume",
+                "C3DTExtensions",
+                "C3DTBatchTableHierarchyExtension"
+            ],
+
+            "Plugins": [
+                "DragNDrop",
+                "FeatureToolTip",
+                "TIFFParser"
+            ]
+        }
+    },
+    "templates": {
+        "default": {
+            "staticFiles": {
+                "paths": ["docs"]
+            }
+        }
+    },
+    "source": {
+        "include": [ "src", "examples/js/plugins" ],
+        "exclude": [ "src/ThreeExtended" ]
+    },
+    "plugins": ["plugins/markdown"]
+}

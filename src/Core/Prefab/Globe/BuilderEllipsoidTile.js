@@ -1,87 +1,126 @@
 import * as THREE from 'three';
-import { C } from '../../Geographic/Coordinates';
-import Projection from '../../Geographic/Projection';
-import OBB from '../../../Renderer/ThreeExtended/OBB';
+import Coordinates from 'Core/Geographic/Coordinates';
+import Extent from 'Core/Geographic/Extent';
 
-function BuilderEllipsoidTile() {
-    this.projector = new Projection();
+const PI_OV_FOUR = Math.PI / 4;
+const INV_TWO_PI = 1.0 / (Math.PI * 2);
+const axisZ = new THREE.Vector3(0, 0, 1);
+const axisY = new THREE.Vector3(0, 1, 0);
+const quatToAlignLongitude = new THREE.Quaternion();
+const quatToAlignLatitude = new THREE.Quaternion();
+const quatNormalToZ = new THREE.Quaternion();
 
-    this.tmp = {
-        coords: [
-            C.EPSG_4326_Radians(0, 0),
-            C.EPSG_4326_Radians(0, 0)],
-        position: new THREE.Vector3(),
-        normal: new THREE.Vector3(),
-    };
+function WGS84ToOneSubY(latitude) {
+    return 1.0 - (0.5 - Math.log(Math.tan(PI_OV_FOUR + THREE.MathUtils.degToRad(latitude) * 0.5)) * INV_TWO_PI);
 }
 
-BuilderEllipsoidTile.prototype.constructor = BuilderEllipsoidTile;
+class BuilderEllipsoidTile {
+    constructor(options = {}) {
+        this.tmp = {
+            coords: [
+                new Coordinates('EPSG:4326', 0, 0),
+                new Coordinates('EPSG:4326', 0, 0)],
+            position: new THREE.Vector3(),
+            dimension: new THREE.Vector2(),
+        };
 
-// prepare params
-// init projected object -> params.projected
-BuilderEllipsoidTile.prototype.Prepare = function Prepare(params) {
-    params.nbRow = Math.pow(2.0, params.level + 1.0);
+        this.crs = options.crs;
+        // Order crs projection on tiles
+        this.uvCount = options.uvCount;
 
-    var st1 = this.projector.WGS84ToOneSubY(params.extent.south());
+        this.computeUvs = [
+            // Normalized coordinates (from degree) on the entire tile
+            // EPSG:4326
+            () => {},
+            // Float row coordinate from Pseudo mercator coordinates
+            // EPSG:3857
+            (params) => {
+                const t = WGS84ToOneSubY(params.projected.latitude) * params.nbRow;
+                return (!isFinite(t) ? 0 : t) - params.deltaUV1;
+            },
+        ];
+    }
+    // prepare params
+    // init projected object -> params.projected
+    prepare(params) {
+        params.nbRow = 2 ** (params.level + 1.0);
 
-    if (!isFinite(st1))
-        { st1 = 0; }
+        var st1 = WGS84ToOneSubY(params.extent.south);
 
-    var sizeTexture = 1.0 / params.nbRow;
+        if (!isFinite(st1)) { st1 = 0; }
 
-    var start = (st1 % (sizeTexture));
+        var sizeTexture = 1.0 / params.nbRow;
 
-    params.deltaUV1 = (st1 - start) * params.nbRow;
+        var start = (st1 % (sizeTexture));
 
-    // let's avoid building too much temp objects
-    params.projected = { longitudeRad: 0, latitudeRad: 0 };
-};
+        params.deltaUV1 = (st1 - start) * params.nbRow;
 
-// get center tile in cartesian 3D
-BuilderEllipsoidTile.prototype.Center = function Center(params) {
-    params.center = params.extent.center(this.tmp.coords[0])
-        .as('EPSG:4978', this.tmp.coords[1]).xyz();
-    return params.center;
-};
+        // transformation to align tile's normal to z axis
+        params.quatNormalToZ = quatNormalToZ.setFromAxisAngle(
+            axisY,
+            -(Math.PI * 0.5 - THREE.MathUtils.degToRad(params.extent.center().latitude)));
 
-// get position 3D cartesian
-BuilderEllipsoidTile.prototype.VertexPosition = function VertexPosition(params) {
-    this.tmp.coords[0]._values[0] = params.projected.longitudeRad;
-    this.tmp.coords[0]._values[1] = params.projected.latitudeRad;
+        // let's avoid building too much temp objects
+        params.projected = { longitude: 0, latitude: 0 };
+        params.extent.dimensions(this.tmp.dimension);
+    }
 
-    this.tmp.coords[0].as('EPSG:4978', this.tmp.coords[1]).xyz(this.tmp.position);
-    this.tmp.normal.copy(this.tmp.position).normalize();
-    return this.tmp.position;
-};
+    // get center tile in cartesian 3D
+    center(extent) {
+        return extent.center(this.tmp.coords[0])
+            .as(this.crs, this.tmp.coords[1]).toVector3();
+    }
 
-// get normal for last vertex
-BuilderEllipsoidTile.prototype.VertexNormal = function VertexNormal() {
-    return this.tmp.normal;
-};
+    // get position 3D cartesian
+    vertexPosition(params) {
+        this.tmp.coords[0].setFromValues(
+            params.projected.longitude,
+            params.projected.latitude);
 
-// coord u tile to projected
-BuilderEllipsoidTile.prototype.uProjecte = function uProjecte(u, params) {
-    params.projected.longitudeRad = this.projector.UnitaryToLongitudeWGS84(u, params.extent);
-};
+        this.tmp.coords[0].as(this.crs, this.tmp.coords[1]).toVector3(this.tmp.position);
+        return this.tmp.position;
+    }
 
-// coord v tile to projected
-BuilderEllipsoidTile.prototype.vProjecte = function vProjecte(v, params) {
-    params.projected.latitudeRad = this.projector.UnitaryToLatitudeWGS84(v, params.extent);
-};
+    // get normal for last vertex
+    vertexNormal() {
+        return this.tmp.coords[1].geodesicNormal;
+    }
 
-// Compute uv 1, if isn't defined the uv1 isn't computed
-BuilderEllipsoidTile.prototype.getUV_PM = function getUV_PM(params) {
-    var t = this.projector.WGS84ToOneSubY(params.projected.latitudeRad) * params.nbRow;
+    // coord u tile to projected
+    uProjecte(u, params) {
+        params.projected.longitude = params.extent.west + u * this.tmp.dimension.x;
+    }
 
-    if (!isFinite(t))
-        { t = 0; }
+    // coord v tile to projected
+    vProjecte(v, params) {
+        params.projected.latitude = params.extent.south + v * this.tmp.dimension.y;
+    }
 
-    return t - params.deltaUV1;
-};
+    computeSharableExtent(extent) {
+        // Compute sharable extent to pool the geometries
+        // the geometry in common extent is identical to the existing input
+        // with a transformation (translation, rotation)
 
-// use for region for adaptation boundingVolume
-BuilderEllipsoidTile.prototype.OBB = function OBBFn(params) {
-    return OBB.extentToOBB(params.extent);
-};
+        // TODO: It should be possible to use equatorial plan symetrie,
+        // but we should be reverse UV on tile
+        // Common geometry is looking for only on longitude
+        const sizeLongitude = Math.abs(extent.west - extent.east) / 2;
+        const sharableExtent = new Extent(extent.crs, -sizeLongitude, sizeLongitude, extent.south, extent.north);
+
+        // compute rotation to transform tile to position it on ellipsoid
+        // this transformation take into account the transformation of the parents
+        const rotLon = THREE.MathUtils.degToRad(extent.west - sharableExtent.west);
+        const rotLat = THREE.MathUtils.degToRad(90 - extent.center(this.tmp.coords[0]).latitude);
+        quatToAlignLongitude.setFromAxisAngle(axisZ, rotLon);
+        quatToAlignLatitude.setFromAxisAngle(axisY, rotLat);
+        quatToAlignLongitude.multiply(quatToAlignLatitude);
+
+        return {
+            sharableExtent,
+            quaternion: quatToAlignLongitude.clone(),
+            position: this.center(extent),
+        };
+    }
+}
 
 export default BuilderEllipsoidTile;

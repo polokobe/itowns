@@ -1,9 +1,16 @@
-// please consider modifying babel-loader configuration in webpack.config.js
 {
-    "presets": ["es2015"],
+    "presets": ["@babel/preset-env"],
     "plugins": [
-        "transform-runtime",
-        [ "babel-plugin-webpack-loaders", { "config": "./webpack-babel.config.js", "verbose": false }],
+        ["module-resolver",  { "root": ["./src"] } ],
+        ["babel-plugin-inline-import", {
+            "extensions": [
+                ".json",
+                ".glsl",
+                ".gltf",
+                ".css"
+            ]
+        }],
+        ["@babel/plugin-transform-runtime"],
         ["minify-replace", {
             "replacements": [{
                 "identifierName": "__DEBUG__",

@@ -1,33 +1,30 @@
-precision highp float;
-precision highp int;
-
+#include <itowns/WebGL2_pars_fragment>
+#include <itowns/precision_qualifier>
 #include <logdepthbuf_pars_fragment>
+#if defined(USE_TEXTURES_PROJECTIVE)
+#include <itowns/projective_texturing_pars_fragment>
+#endif
 
 varying vec4 vColor;
-uniform bool pickingMode;
-uniform float opacity;
-
-uniform bool useCustomColor;
-uniform vec3 customColor;
-
+uniform bool picking;
 void main() {
+    #include <logdepthbuf_fragment>
     // circular point rendering
-    float u = 2.0 * gl_PointCoord.x - 1.0;
-    float v = 2.0 * gl_PointCoord.y - 1.0;
-    float cc = u*u + v*v;
-    if(cc > 1.0){
+    if((length(gl_PointCoord - 0.5) > 0.5) || (vColor.a == 0.0)) {
         discard;
     }
-
-    if (useCustomColor && !pickingMode) {
-        gl_FragColor = mix(vColor, vec4(customColor, 1.0), 0.5);
+#if defined(USE_TEXTURES_PROJECTIVE)
+    vec4 color = vColor;
+    if (!picking) {
+        #pragma unroll_loop
+        for (int i = 0; i < ORIENTED_IMAGES_COUNT; i++) {
+            color = projectiveTextureColor(projectiveTextureCoords[ ORIENTED_IMAGES_COUNT - 1 - i ], projectiveTextureDistortion[ ORIENTED_IMAGES_COUNT - 1 - i ], projectiveTexture[ ORIENTED_IMAGES_COUNT - 1 - i ], mask[ORIENTED_IMAGES_COUNT - 1 - i], color);
+        }
+        gl_FragColor = vec4(color.rgb, color.a * opacity);
     } else {
-        gl_FragColor = vColor;
+        gl_FragColor = color;
     }
-
-    if (!pickingMode) {
-        gl_FragColor.a = opacity;
-    }
-
-    #include <logdepthbuf_fragment>
+#else
+    gl_FragColor = vColor;
+#endif
 }

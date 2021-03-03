@@ -6,4 +6,7 @@
 /node_modules/
 /dist/
 /lib/
-/out/
+/docs/out/
+coverage
+.nyc_output/
+/src/ThreeExtended/

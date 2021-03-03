@@ -1,22 +1,17 @@
 {
-    "type": "color",
-    "protocol":   "wmts",
-    "id":         "Ortho",
-    "url":        "http://wxs.ign.fr/va5orxd0pgzvq3jxutqfuy0b/geoportail/wmts",
-    "networkOptions": {
-        "crossOrigin": "anonymous"
-    },
-    "updateStrategy": {
-        "type": "0",
-        "options": {}
-    },
-    "options": {
+    "id":   "Ortho",
+    "source": {
+        "url": "https://wxs.ign.fr/3ht7xcw6f7nciopo16etuqp2/geoportail/wmts",
+        "crs": "EPSG:3857",
+        "networkOptions": {
+            "crossOrigin": "anonymous"
+        },
+        "format": "image/jpeg",
         "attribution" : {
             "name":"IGN",
             "url":"http://www.ign.fr/"
         },
         "name": "ORTHOIMAGERY.ORTHOPHOTOS",
-        "mimetype": "image/jpeg",
         "tileMatrixSet": "PM",
         "tileMatrixSetLimits": {
             "2": {
@@ -116,22 +111,28 @@
                 "maxTileCol": 126683
             },
             "18": {
-                "minTileRow": 87651,
-                "maxTileRow": 148105,
-                "minTileCol": 1320,
-                "maxTileCol": 253366
+                "minTileRow": 87648,
+                "maxTileRow": 148111,
+                "minTileCol": 1312,
+                "maxTileCol": 253375
             },
             "19": {
-                "minTileRow": 175302,
-                "maxTileRow": 294060,
-                "minTileCol": 170159,
-                "maxTileCol": 343473
+                "minTileRow": 175296,
+                "maxTileRow": 294063,
+                "minTileCol": 170144,
+                "maxTileCol": 343487
             },
             "20": {
-                "minTileRow": 376733,
-                "maxTileRow": 384679,
-                "minTileCol": 530773,
-                "maxTileCol": 540914
+                "minTileRow": 357008,
+                "maxTileRow": 384687,
+                "minTileCol": 524400,
+                "maxTileCol": 540927
+            },
+            "21": {
+                "minTileRow": 714032,
+                "maxTileRow": 768783,
+                "minTileCol": 1048816,
+                "maxTileCol": 1081775
             }
         }
     }

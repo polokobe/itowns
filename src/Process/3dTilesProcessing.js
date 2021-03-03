@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import Extent from 'Core/Geographic/Extent';
 
 function requestNewTile(view, scheduler, geometryLayer, metadata, parent, redraw) {
     const command = {
@@ -15,6 +16,11 @@ function requestNewTile(view, scheduler, geometryLayer, metadata, parent, redraw
     return scheduler.execute(command);
 }
 
+function getChildTiles(tile) {
+    // only keep children that have the same layer and a valid tileId
+    return tile.children.filter(n => n.layer == tile.layer && n.tileId);
+}
+
 function subdivideNode(context, layer, node, cullingTest) {
     if (node.additiveRefinement) {
         // Additive refinement can only fetch visible children.
@@ -26,9 +32,30 @@ function subdivideNode(context, layer, node, cullingTest) {
     }
 }
 
+const tmpBox3 = new THREE.Box3();
+const tmpSphere = new THREE.Sphere();
+function boundingVolumeToExtent(crs, volume, transform) {
+    if (volume.region) {
+        const box = tmpBox3.copy(volume.region.box3D)
+            .applyMatrix4(volume.region.matrixWorld);
+        return Extent.fromBox3(crs, box);
+    } else if (volume.box) {
+        const box = tmpBox3.copy(volume.box).applyMatrix4(transform);
+        return Extent.fromBox3(crs, box);
+    } else {
+        const sphere = tmpSphere.copy(volume.sphere).applyMatrix4(transform);
+        return new Extent(crs, {
+            west: sphere.center.x - sphere.radius,
+            east: sphere.center.x + sphere.radius,
+            south: sphere.center.y - sphere.radius,
+            north: sphere.center.y + sphere.radius,
+        });
+    }
+}
+
 const tmpMatrix = new THREE.Matrix4();
 function _subdivideNodeAdditive(context, layer, node, cullingTest) {
-    for (const child of layer.tileIndex.index[node.tileId].children) {
+    for (const child of layer.tileset.tiles[node.tileId].children) {
         // child being downloaded => skip
         if (child.promise || child.loaded) {
             continue;
@@ -41,7 +68,7 @@ function _subdivideNodeAdditive(context, layer, node, cullingTest) {
             overrideMatrixWorld = tmpMatrix.multiplyMatrices(node.matrixWorld, child.transform);
         }
 
-        const isVisible = cullingTest ? !cullingTest(context.camera, child, overrideMatrixWorld) : true;
+        const isVisible = cullingTest ? !cullingTest(layer, context.camera, child, overrideMatrixWorld) : true;
 
         // child is not visible => skip
         if (!isVisible) {
@@ -50,7 +77,14 @@ function _subdivideNodeAdditive(context, layer, node, cullingTest) {
         child.promise = requestNewTile(context.view, context.scheduler, layer, child, node, true).then((tile) => {
             node.add(tile);
             tile.updateMatrixWorld();
-            context.view.notifyChange(true);
+
+            const extent = boundingVolumeToExtent(layer.extent.crs, tile.boundingVolume, tile.matrixWorld);
+            tile.traverse((obj) => {
+                obj.extent = extent;
+            });
+            layer.onTileContentLoaded(tile);
+
+            context.view.notifyChange(child);
             child.loaded = true;
             delete child.promise;
         });
@@ -58,8 +92,8 @@ function _subdivideNodeAdditive(context, layer, node, cullingTest) {
 }
 
 function _subdivideNodeSubstractive(context, layer, node) {
-    if (!node.pendingSubdivision && node.children.filter(n => n.layer == layer.id).length == 0) {
-        const childrenTiles = layer.tileIndex.index[node.tileId].children;
+    if (!node.pendingSubdivision && getChildTiles(node).length == 0) {
+        const childrenTiles = layer.tileset.tiles[node.tileId].children;
         if (childrenTiles === undefined || childrenTiles.length === 0) {
             return;
         }
@@ -73,54 +107,33 @@ function _subdivideNodeSubstractive(context, layer, node) {
                     node.add(tile);
                     tile.updateMatrixWorld();
                     if (node.additiveRefinement) {
-                        context.view.notifyChange(true);
+                        context.view.notifyChange(node);
                     }
-                    layer.tileIndex.index[tile.tileId].loaded = true;
+                    layer.tileset.tiles[tile.tileId].loaded = true;
+                    layer.onTileContentLoaded(tile);
                 }));
         }
         Promise.all(promises).then(() => {
             node.pendingSubdivision = false;
-            context.view.notifyChange(true);
+            context.view.notifyChange(node);
         });
     }
 }
 
-export function $3dTilesCulling(camera, node, tileMatrixWorld) {
-    // For viewer Request Volume https://github.com/AnalyticalGraphicsInc/3d-tiles-samples/tree/master/tilesets/TilesetWithRequestVolume
-    if (node.viewerRequestVolume) {
-        const nodeViewer = node.viewerRequestVolume;
-        if (nodeViewer.region) {
-            // TODO
-            return true;
-        }
-        if (nodeViewer.box) {
-            // TODO
-            return true;
-        }
-        if (nodeViewer.sphere) {
-            const worldCoordinateCenter = nodeViewer.sphere.center.clone();
-            worldCoordinateCenter.applyMatrix4(tileMatrixWorld);
-            // To check the distance between the center sphere and the camera
-            if (!(camera.camera3D.position.distanceTo(worldCoordinateCenter) <= nodeViewer.sphere.radius)) {
-                return true;
-            }
-        }
+export function $3dTilesCulling(layer, camera, node, tileMatrixWorld) {
+    // For viewer Request Volume
+    // https://github.com/AnalyticalGraphicsInc/3d-tiles-samples/tree/master/tilesets/TilesetWithRequestVolume
+    if (node.viewerRequestVolume && node.viewerRequestVolume.viewerRequestVolumeCulling(
+        camera, tileMatrixWorld)) {
+        return true;
     }
 
     // For bounding volume
-    if (node.boundingVolume) {
-        const boundingVolume = node.boundingVolume;
-        if (boundingVolume.region) {
-            return !camera.isBox3Visible(boundingVolume.region.box3D,
-                tileMatrixWorld.clone().multiply(boundingVolume.region.matrix));
-        }
-        if (boundingVolume.box) {
-            return !camera.isBox3Visible(boundingVolume.box, tileMatrixWorld);
-        }
-        if (boundingVolume.sphere) {
-            return !camera.isSphereVisible(boundingVolume.sphere, tileMatrixWorld);
-        }
+    if (node.boundingVolume &&
+        node.boundingVolume.boundingVolumeCulling(camera, tileMatrixWorld)) {
+        return true;
     }
+
     return false;
 }
 
@@ -157,7 +170,7 @@ function cleanup3dTileset(layer, n, depth = 0) {
             n.dispose();
         }
         delete n.content;
-        layer.tileIndex.index[n.tileId].loaded = false;
+        layer.tileset.tiles[n.tileId].loaded = false;
         n.remove(...n.children);
 
         // and finally remove from parent
@@ -165,7 +178,7 @@ function cleanup3dTileset(layer, n, depth = 0) {
             n.parent.remove(n);
         }
     } else {
-        const tiles = n.children.filter(n => n.tileId != undefined);
+        const tiles = getChildTiles(n);
         n.remove(...tiles);
     }
 }
@@ -179,7 +192,15 @@ function _cleanupObject3D(n) {
     }
     // free resources
     if (n.material) {
-        n.material.dispose();
+        // material can be either a THREE.Material object, or an array of
+        // THREE.Material objects
+        if (Array.isArray(n.material)) {
+            for (const material of n.material) {
+                material.dispose();
+            }
+        } else {
+            n.material.dispose();
+        }
     }
     if (n.geometry) {
         n.geometry.dispose();
@@ -187,80 +208,79 @@ function _cleanupObject3D(n) {
     n.remove(...n.children);
 }
 
-export function pre3dTilesUpdate(context, layer) {
-    if (!layer.visible) {
+// this is a layer
+export function pre3dTilesUpdate() {
+    if (!this.visible) {
         return [];
     }
 
-    // pre-sse
-    const hypotenuse = Math.sqrt(context.camera.width * context.camera.width + context.camera.height * context.camera.height);
-    const radAngle = context.camera.camera3D.fov * Math.PI / 180;
-
-     // TODO: not correct -> see new preSSE
-    // const HFOV = 2.0 * Math.atan(Math.tan(radAngle * 0.5) / context.camera.ratio);
-    const HYFOV = 2.0 * Math.atan(Math.tan(radAngle * 0.5) * hypotenuse / context.camera.width);
-    context.camera.preSSE = hypotenuse * (2.0 * Math.tan(HYFOV * 0.5));
-
-    // once in a while, garbage collect
-    if (Math.random() > 0.98) {
+    // Elements removed are added in the layer._cleanableTiles list.
+    // Since we simply push in this array, the first item is always
+    // the oldest one.
+    const now = Date.now();
+    if (this._cleanableTiles.length
+        && (now - this._cleanableTiles[0].cleanableSince) > this.cleanupDelay) {
         // Make sure we don't clean root tile
-        layer.root.cleanableSince = undefined;
+        this.root.cleanableSince = undefined;
 
-        // Browse
-        const now = Date.now();
-
-        for (const elt of layer._cleanableTiles) {
-            if ((now - elt.cleanableSince) > layer.cleanupDelay) {
-                cleanup3dTileset(layer, elt);
+        let i = 0;
+        for (; i < this._cleanableTiles.length; i++) {
+            const elt = this._cleanableTiles[i];
+            if ((now - elt.cleanableSince) > this.cleanupDelay) {
+                cleanup3dTileset(this, elt);
+            } else {
+                // later entries are younger
+                break;
             }
         }
-        layer._cleanableTiles = layer._cleanableTiles.filter(n => (layer.tileIndex.index[n.tileId].loaded && n.cleanableSince));
+        // remove deleted elements from _cleanableTiles
+        this._cleanableTiles.splice(0, i);
     }
 
-    return [layer.root];
+    return [this.root];
 }
 
-// Improved zoom geometry
-function computeNodeSSE(camera, node) {
+const boundingVolumeBox = new THREE.Box3();
+const boundingVolumeSphere = new THREE.Sphere();
+export function computeNodeSSE(camera, node) {
+    node.distance = 0;
     if (node.boundingVolume.region) {
-        const cameraLocalPosition = camera.camera3D.position.clone();
-        cameraLocalPosition.x -= node.boundingVolume.region.matrixWorld.elements[12];
-        cameraLocalPosition.y -= node.boundingVolume.region.matrixWorld.elements[13];
-        cameraLocalPosition.z -= node.boundingVolume.region.matrixWorld.elements[14];
-        const distance = node.boundingVolume.region.box3D.distanceToPoint(cameraLocalPosition);
-        node.distance = distance;
-        return camera.preSSE * (node.geometricError / distance);
+        boundingVolumeBox.copy(node.boundingVolume.region.box3D);
+        boundingVolumeBox.applyMatrix4(node.boundingVolume.region.matrixWorld);
+        node.distance = boundingVolumeBox.distanceToPoint(camera.camera3D.position);
+    } else if (node.boundingVolume.box) {
+        // boundingVolume.box is affected by matrixWorld
+        boundingVolumeBox.copy(node.boundingVolume.box);
+        boundingVolumeBox.applyMatrix4(node.matrixWorld);
+        node.distance = boundingVolumeBox.distanceToPoint(camera.camera3D.position);
+    } else if (node.boundingVolume.sphere) {
+        // boundingVolume.sphere is affected by matrixWorld
+        boundingVolumeSphere.copy(node.boundingVolume.sphere);
+        boundingVolumeSphere.applyMatrix4(node.matrixWorld);
+        // TODO: see https://github.com/iTowns/itowns/issues/800
+        node.distance = Math.max(0.0,
+            boundingVolumeSphere.distanceToPoint(camera.camera3D.position));
+    } else {
+        return Infinity;
     }
-    if (node.boundingVolume.box) {
-        const cameraLocalPosition = camera.camera3D.position.clone();
-        cameraLocalPosition.x -= node.matrixWorld.elements[12];
-        cameraLocalPosition.y -= node.matrixWorld.elements[13];
-        cameraLocalPosition.z -= node.matrixWorld.elements[14];
-        const distance = node.boundingVolume.box.distanceToPoint(cameraLocalPosition);
-        node.distance = distance;
-        return camera.preSSE * (node.geometricError / distance);
+    if (node.distance === 0) {
+        // This test is needed in case geometricError = distance = 0
+        return Infinity;
     }
-    if (node.boundingVolume.sphere) {
-        const cameraLocalPosition = camera.camera3D.position.clone();
-        cameraLocalPosition.x -= node.matrixWorld.elements[12];
-        cameraLocalPosition.y -= node.matrixWorld.elements[13];
-        cameraLocalPosition.z -= node.matrixWorld.elements[14];
-        const distance = node.boundingVolume.sphere.distanceToPoint(cameraLocalPosition);
-        node.distance = distance;
-        return camera.preSSE * (node.geometricError / distance);
-    }
-    return Infinity;
+    return camera._preSSE * (node.geometricError / node.distance);
 }
 
-export function init3dTilesLayer(view, scheduler, layer) {
-    return requestNewTile(view, scheduler, layer, layer.tileset.root, undefined, true).then(
-            (tile) => {
-                delete layer.tileset;
-                layer.object3d.add(tile);
-                tile.updateMatrixWorld();
-                layer.tileIndex.index[tile.tileId].loaded = true;
-                layer.root = tile;
-            });
+export function init3dTilesLayer(view, scheduler, layer, rootTile) {
+    return requestNewTile(view, scheduler, layer, rootTile, undefined, true).then(
+        (tile) => {
+            layer.object3d.add(tile);
+            tile.updateMatrixWorld();
+            layer.tileset.tiles[tile.tileId].loaded = true;
+            layer.root = tile;
+            layer.extent = boundingVolumeToExtent(layer.crs || view.referenceCrs,
+                tile.boundingVolume, tile.matrixWorld);
+            layer.onTileContentLoaded(tile);
+        });
 }
 
 function setDisplayed(node, display) {
@@ -279,7 +299,7 @@ function markForDeletion(layer, elt) {
     }
 }
 
-export function process3dTilesNode(cullingTest, subdivisionTest) {
+export function process3dTilesNode(cullingTest = $3dTilesCulling, subdivisionTest = $3dTilesSubdivisionControl) {
     return function _process3dTilesNodes(context, layer, node) {
         // early exit if parent's subdivision is in progress
         if (node.parent.pendingSubdivision && !node.parent.additiveRefinement) {
@@ -288,47 +308,42 @@ export function process3dTilesNode(cullingTest, subdivisionTest) {
         }
 
         // do proper culling
-        const isVisible = cullingTest ? (!cullingTest(context.camera, node, node.matrixWorld)) : true;
+        const isVisible = cullingTest ? (!cullingTest(layer, context.camera, node, node.matrixWorld)) : true;
         node.visible = isVisible;
 
-
         if (isVisible) {
-            node.cleanableSince = undefined;
+            if (node.cleanableSince) {
+                layer._cleanableTiles.splice(layer._cleanableTiles.indexOf(node), 1);
+                node.cleanableSince = undefined;
+            }
 
             let returnValue;
             if (node.pendingSubdivision || subdivisionTest(context, layer, node)) {
                 subdivideNode(context, layer, node, cullingTest);
                 // display iff children aren't ready
                 setDisplayed(node, node.pendingSubdivision || node.additiveRefinement);
-                returnValue = node.children.filter(n => n.layer == layer.id);
+                returnValue = getChildTiles(node);
             } else {
                 setDisplayed(node, true);
 
-                for (const n of node.children.filter(n => n.layer == layer.id)) {
+                for (const n of getChildTiles(node)) {
                     n.visible = false;
                     markForDeletion(layer, n);
                 }
-            }
-            // toggle wireframe
-            if (node.content && node.content.visible) {
-                node.content.traverse((o) => {
-                    if (o.material) {
-                        o.material.wireframe = layer.wireframe;
-                    }
-                });
             }
             return returnValue;
         }
 
         markForDeletion(layer, node);
-
-        return undefined;
     };
 }
 
 export function $3dTilesSubdivisionControl(context, layer, node) {
-    if (layer.tileIndex.index[node.tileId].children === undefined) {
+    if (layer.tileset.tiles[node.tileId].children === undefined) {
         return false;
+    }
+    if (layer.tileset.tiles[node.tileId].isTileset) {
+        return true;
     }
     const sse = computeNodeSSE(context.camera, node);
     return sse > layer.sseThreshold;
