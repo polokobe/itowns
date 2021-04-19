@@ -14,6 +14,7 @@ const mouseButtons = {
     MIDDLECLICK: THREE.MOUSE.MIDDLE,
     RIGHTCLICK: THREE.MOUSE.RIGHT,
 };
+let currentPressedButton;
 
 // starting camera position and orientation target
 const startPosition = new THREE.Vector3();
@@ -32,6 +33,16 @@ export const STATE = {
     ROTATE: 2,
     TRAVEL: 3,
     ORTHO_ZOOM: 4,
+};
+
+// cursor shape linked to control state
+const cursor = {
+    default: 'auto',
+    drag: 'move',
+    pan: 'cell',
+    travel: 'wait',
+    rotate: 'move',
+    ortho_zoom: 'wait',
 };
 
 const vectorZero = new THREE.Vector3();
@@ -85,6 +96,8 @@ const defaultOptions = {
     maxPanSpeed: 15,
     zoomTravelTime: 0.2,  // must be a number
     zoomFactor: 2,
+    maxResolution: 1 / Infinity,
+    minResolution: Infinity,
     maxAltitude: 50000000,
     groundLevel: 200,
     autoTravelTimeMin: 1.5,
@@ -133,6 +146,10 @@ export const PLANAR_CONTROL_EVENT = {
  * @param   {number}        [options.zoomTravelTime=0.2]        Animation time when zooming.
  * @param   {number}        [options.zoomFactor=2]              The factor the scale is multiplied by when zooming
  * in and divided by when zooming out. This factor can't be null.
+ * @param   {number}        [options.maxResolution=0]           The smallest size in meters a pixel at the center of the
+ * view can represent.
+ * @param   {number}        [options.minResolution=Infinity]    The biggest size in meters a pixel at the center of the
+ * view can represent.
  * @param   {number}        [options.maxAltitude=12000]         Maximum altitude reachable when panning or zooming out.
  * @param   {number}        [options.groundLevel=200]           Minimum altitude reachable when panning.
  * @param   {number}        [options.autoTravelTimeMin=1.5]     Minimum duration for animated travels with the `auto`
@@ -214,6 +231,10 @@ class PlanarControls extends THREE.EventDispatcher {
         this.zoomInFactor = options.zoomFactor || defaultOptions.zoomFactor;
         this.zoomOutFactor = 1 / (options.zoomFactor || defaultOptions.zoomFactor);
 
+        // the maximum and minimum size (in meters) a pixel at the center of the view can represent
+        this.maxResolution = options.maxResolution || defaultOptions.maxResolution;
+        this.minResolution = options.minResolution || defaultOptions.minResolution;
+
         // approximate ground altitude value. Camera altitude is clamped above groundLevel
         this.groundLevel = options.groundLevel || defaultOptions.groundLevel;
 
@@ -261,6 +282,7 @@ class PlanarControls extends THREE.EventDispatcher {
 
         // control state
         this.state = STATE.NONE;
+        this.cursor = cursor;
 
         if (this.view.controls) {
             // esLint-disable-next-line no-console
@@ -502,6 +524,12 @@ class PlanarControls extends THREE.EventDispatcher {
 
         if (delta > 0 || (delta < 0 && this.maxAltitude > this.camera.position.z)) {
             const zoomFactor = delta > 0 ? this.zoomInFactor : this.zoomOutFactor;
+
+            // do not zoom if the resolution after the zoom is outside resolution limits
+            const endResolution = this.view.getPixelsToMeters() / zoomFactor;
+            if (this.maxResolution > endResolution || endResolution > this.minResolution) {
+                return;
+            }
 
             // change the camera field of view if the camera is orthographic
             if (this.camera.isOrthographicCamera) {
@@ -871,6 +899,7 @@ class PlanarControls extends THREE.EventDispatcher {
         this.view.domElement.addEventListener('keydown', this._handlerOnKeyDown, false);
         this.view.domElement.addEventListener('mousedown', this._handlerOnMouseDown, false);
         this.view.domElement.addEventListener('mouseup', this._handlerOnMouseUp, false);
+        this.view.domElement.addEventListener('mouseleave', this._handlerOnMouseUp, false);
         this.view.domElement.addEventListener('mousemove', this._handlerOnMouseMove, false);
         this.view.domElement.addEventListener('mousewheel', this._handlerOnMouseWheel, false);
         // focus policy
@@ -896,6 +925,7 @@ class PlanarControls extends THREE.EventDispatcher {
         this.view.domElement.removeEventListener('keydown', this._handlerOnKeyDown, true);
         this.view.domElement.removeEventListener('mousedown', this._handlerOnMouseDown, false);
         this.view.domElement.removeEventListener('mouseup', this._handlerOnMouseUp, false);
+        this.view.domElement.removeEventListener('mouseleave', this._handlerOnMouseUp, false);
         this.view.domElement.removeEventListener('mousemove', this._handlerOnMouseMove, false);
         this.view.domElement.removeEventListener('mousewheel', this._handlerOnMouseWheel, false);
         this.view.domElement.removeEventListener('mouseover', this._handlerFocusOnMouseOver, false);
@@ -913,20 +943,22 @@ class PlanarControls extends THREE.EventDispatcher {
     updateMouseCursorType() {
         switch (this.state) {
             case STATE.NONE:
-                this.view.domElement.style.cursor = 'auto';
+                this.view.domElement.style.cursor = this.cursor.default;
                 break;
             case STATE.DRAG:
-                this.view.domElement.style.cursor = 'move';
+                this.view.domElement.style.cursor = this.cursor.drag;
                 break;
             case STATE.PAN:
-                this.view.domElement.style.cursor = 'cell';
+                this.view.domElement.style.cursor = this.cursor.pan;
                 break;
             case STATE.TRAVEL:
+                this.view.domElement.style.cursor = this.cursor.travel;
+                break;
             case STATE.ORTHO_ZOOM:
-                this.view.domElement.style.cursor = 'wait';
+                this.view.domElement.style.cursor = this.cursor.ortho_zoom;
                 break;
             case STATE.ROTATE:
-                this.view.domElement.style.cursor = 'move';
+                this.view.domElement.style.cursor = this.cursor.rotate;
                 break;
             default:
                 break;
@@ -942,6 +974,18 @@ class PlanarControls extends THREE.EventDispatcher {
     }
 
     /**
+     * cursor modification for a specifique state.
+     *
+     * @param   {string} state   the state in which we want to change the cursor ('default', 'drag', 'pan', 'travel', 'rotate').
+     * @param   {string} newCursor   the css cursor we want to have for the specified state.
+     * @ignore
+     */
+    setCursor(state, newCursor) {
+        this.cursor[state] = newCursor;
+        this.updateMouseCursorType();
+    }
+
+    /**
      * Catch and manage the event when a touch on the mouse is downs.
      *
      * @param   {Event} event   the current event (mouse left or right button clicked, mouse wheel button actioned).
@@ -950,9 +994,10 @@ class PlanarControls extends THREE.EventDispatcher {
     onMouseDown(event) {
         event.preventDefault();
 
-        if (STATE.TRAVEL === this.state) {
+        if (STATE.NONE !== this.state) {
             return;
         }
+        currentPressedButton = event.button;
 
         this.updateMousePositionAndDelta(event);
 
@@ -992,7 +1037,7 @@ class PlanarControls extends THREE.EventDispatcher {
     onMouseUp(event) {
         event.preventDefault();
 
-        if (STATE.TRAVEL !== this.state) {
+        if (STATE.TRAVEL !== this.state && currentPressedButton === event.button) {
             this.state = STATE.NONE;
         }
 
@@ -1023,7 +1068,7 @@ class PlanarControls extends THREE.EventDispatcher {
      * @ignore
      */
     onKeyDown(event) {
-        if (STATE.TRAVEL === this.state) {
+        if (STATE.NONE !== this.state) {
             return;
         }
         switch (event.keyCode) {

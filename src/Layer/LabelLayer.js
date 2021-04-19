@@ -72,6 +72,7 @@ class LabelLayer extends Layer {
         // Converting the extent now is faster for further operation
         extent.as(data.crs, _extent);
         coord.crs = data.crs;
+        const globals = { zoom: extent.zoom };
 
         data.features.forEach((f) => {
             // TODO: add support for LINE and POLYGON
@@ -82,17 +83,6 @@ class LabelLayer extends Layer {
             const featureField = f.style && f.style.text.field;
 
             f.geometries.forEach((g) => {
-                const minzoom = (g.properties.style && g.properties.style.zoom.min)
-                    || (f.style && f.style.zoom.min)
-                    || (this.style && this.style.zoom && this.style.zoom.min);
-
-                // Don't create a label if it is in-between two steps of zoom
-                if (minzoom !== undefined) {
-                    if (!this.source.isFileSource) {
-                        if (data.extent.zoom != minzoom) { return; }
-                    } else if (extent.zoom != minzoom) { return; }
-                }
-
                 // NOTE: this only works because only POINT is supported, it
                 // needs more work for LINE and POLYGON
                 coord.setFromArray(f.vertices, g.size * g.indices[0].offset);
@@ -102,6 +92,7 @@ class LabelLayer extends Layer {
 
                 const geometryField = g.properties.style && g.properties.style.text.field;
                 let content;
+                const context = { globals, properties: () => g.properties };
                 if (!geometryField && !featureField && !layerField) {
                     // Check if there is an icon, with no text
                     if (!(g.properties.style && g.properties.style.icon)
@@ -110,16 +101,16 @@ class LabelLayer extends Layer {
                         return;
                     }
                 } else if (geometryField) {
-                    content = g.properties.style.getTextFromProperties(g.properties);
+                    content = g.properties.style.getTextFromProperties(context);
                 } else if (featureField) {
-                    content = f.style.getTextFromProperties(g.properties);
+                    content = f.style.getTextFromProperties(context);
                 } else if (layerField) {
-                    content = this.style.getTextFromProperties(g.properties);
+                    content = this.style.getTextFromProperties(context);
                 }
 
-                const label = new Label(content,
-                    coord.clone(),
-                    g.properties.style || f.style || this.style);
+                const style = (g.properties.style || f.style || this.style).symbolStylefromContext(context);
+
+                const label = new Label(content, coord.clone(), style, this.source.sprites);
                 label.layerId = this.id;
 
                 if (f.size == 2) {
@@ -169,23 +160,16 @@ class LabelLayer extends Layer {
 
         if (!node.layerUpdateState[this.id].canTryUpdate()) {
             return;
+        } else if (!this.source.extentInsideLimit(node.extent, zoomDest)) {
+            node.layerUpdateState[this.id].noMoreUpdatePossible();
+            return;
         }
 
-
-        const extentsSource = [];
-        for (const extentDest of extentsDestination) {
-            const ext = this.source.crs == extentDest.crs ? extentDest : extentDest.as(this.source.crs);
-            if (!this.source.extentInsideLimit(ext)) {
-                node.layerUpdateState[this.id].noMoreUpdatePossible();
-                return;
-            }
-            extentsSource.push(extentDest);
-        }
         node.layerUpdateState[this.id].newTry();
 
         const command = {
             layer: this,
-            extentsSource,
+            extentsSource: extentsDestination,
             view: context.view,
             threejsLayer: this.threejsLayer,
             requester: node,
@@ -211,15 +195,19 @@ class LabelLayer extends Layer {
                         label.updateElevationFromLayer(this.parent);
                     }
 
-                    node.add(label);
-                    label.update3dPosition(context.view.referenceCrs);
+                    const present = node.children.find(l => l.isLabel && l.baseContent == label.baseContent);
 
-                    if (node.level < 4) {
-                        label.horizonCullingPoint = new THREE.Vector3();
-                        label.updateHorizonCullingPoint();
+                    if (!present) {
+                        node.add(label);
+                        label.update3dPosition(context.view.referenceCrs);
+
+                        if (node.level < 4) {
+                            label.horizonCullingPoint = new THREE.Vector3();
+                            label.updateHorizonCullingPoint();
+                        }
+
+                        labelsDiv.push(label.content);
                     }
-
-                    labelsDiv.push(label.content);
                 });
             });
 
@@ -245,7 +233,7 @@ class LabelLayer extends Layer {
                 // way, we cull labels on parent tile first, and then on
                 // children tile. This allows a z-order priority, and reduce
                 // flickering.
-                node.children.sort(c => (c.isLabel ? -1 : 1));
+                node.children.sort(c => (c.isLabel ? -c.order : 1));
 
                 // Necessary event listener, to remove any Label attached to
                 // this tile
