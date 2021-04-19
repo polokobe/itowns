@@ -34,6 +34,7 @@ if (document.documentElement.style.transform !== undefined) {
  * correct string).
  * @property {THREE.Vector3} position - The position in the 3D world of the
  * label.
+ * @property {number} padding - sets the padding area on all four sides of an element at once.
  * @property {Coordinates} coordinates - The coordinates of the label.
  * @property {number} order - Order of the label that will be read from the
  * style. It helps sorting and prioritizing a Label during render.
@@ -48,8 +49,9 @@ class Label extends THREE.Object3D {
      * is applied, it cannot be changed directly. However, if it really needed,
      * it can be accessed through `label.content.style`, but it is highly
      * discouraged to do so.
+     * @param {Object} [sprites] the sprites.
      */
-    constructor(content = '', coordinates, style = {}) {
+    constructor(content = '', coordinates, style = {}, sprites) {
         if (coordinates == undefined) {
             throw new Error('coordinates are mandatory to add a Label');
         }
@@ -93,7 +95,7 @@ class Label extends THREE.Object3D {
             if (style.text.haloWidth > 0) {
                 this.content.classList.add('itowns-stroke-single');
             }
-            style.applyToHTML(this.content);
+            style.applyToHTML(this.content, sprites);
         } else {
             this.anchor = [0, 0];
         }
@@ -104,6 +106,8 @@ class Label extends THREE.Object3D {
         };
 
         this.order = style.order || 0;
+        // Padding value, to avoid labels being too close to each other.
+        this.padding = 2;
     }
 
     /**
@@ -120,17 +124,15 @@ class Label extends THREE.Object3D {
             this.projectedPosition.x = X;
             this.projectedPosition.y = Y;
 
-            // 2 is a padding value, to avoid labels being too close to each
-            // other. This value has been choosen arbitrarily.
-            this.boundaries.left = x + this.offset.left - 2;
-            this.boundaries.right = x + this.offset.right + 2;
-            this.boundaries.top = y + this.offset.top - 2;
-            this.boundaries.bottom = y + this.offset.bottom + 2;
+            this.boundaries.left = x + this.offset.left - this.padding;
+            this.boundaries.right = x + this.offset.right + this.padding;
+            this.boundaries.top = y + this.offset.top - this.padding;
+            this.boundaries.bottom = y + this.offset.bottom + this.padding;
         }
     }
 
     updateCSSPosition() {
-        this.content.style[STYLE_TRANSFORM] = `translate(${this.boundaries.left}px, ${this.boundaries.top}px)`;
+        this.content.style[STYLE_TRANSFORM] = `translate(${this.boundaries.left + this.padding}px, ${this.boundaries.top + this.padding}px)`;
     }
 
     /**
