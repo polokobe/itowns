@@ -7,7 +7,7 @@ import { FEATURE_TYPES } from 'Core/Feature';
 const geojson = require('../data/geojson/simple.geojson.json');
 
 describe('FeaturesUtils', function () {
-    const options = { out: { crs: 'EPSG:4326', buildExtent: true, mergeFeatures: false, withAltitude: false, withNormal: false } };
+    const options = { out: { crs: 'EPSG:4326', buildExtent: true, mergeFeatures: false, structure: '3d' } };
     const promise = GeoJsonParser.parse(geojson, options);
     it('should correctly parse geojson', () =>
         promise.then((collection) => {
@@ -15,10 +15,11 @@ describe('FeaturesUtils', function () {
         }));
     it('should correctly compute extent geojson', () =>
         promise.then((collection) => {
-            assert.equal(collection.extent.west, 0.30798339284956455);
-            assert.equal(collection.extent.east, 2.4722900334745646);
-            assert.equal(collection.extent.south, 42.91620643817353);
-            assert.equal(collection.extent.north, 43.72744458647463);
+            const extent = collection.extent.clone().applyMatrix4(collection.matrix);
+            assert.equal(extent.west, 0.30798339284956455);
+            assert.equal(extent.east, 2.4722900334745646);
+            assert.equal(extent.south, 42.91620643817353);
+            assert.equal(extent.north, 43.72744458647463);
         }));
     it('should correctly filter point', () =>
         promise.then((collection) => {

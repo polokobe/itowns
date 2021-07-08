@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import Extent from 'Core/Geographic/Extent';
 import Coordinates from 'Core/Geographic/Coordinates';
+import CRS from 'Core/Geographic/Crs';
 import Style from 'Core/Style';
 
 function defaultExtent(crs) {
@@ -17,6 +18,14 @@ function _extendBuffer(feature, size) {
 const coordOut = new Coordinates('EPSG:4326', 0, 0, 0);
 const defaultNormal = new THREE.Vector3(0, 0, 1);
 
+export const FEATURE_TYPES = {
+    POINT: 0,
+    LINE: 1,
+    POLYGON: 2,
+};
+
+const typeToStyleProperty = ['point', 'stroke', 'fill'];
+
 /**
  * @property {string} crs - The CRS to convert the input coordinates to.
  * @property {Extent|boolean} [filteringExtent=undefined] - Optional filter to reject
@@ -27,12 +36,9 @@ const defaultNormal = new THREE.Vector3(0, 0, 1);
  * @property {string} forcedExtentCrs - force feature extent crs if buildExtent is true.
  * @property {function} [filter] - Filter function to remove features
  * @property {boolean} [mergeFeatures=true] - If true all geometries are merged by type and multi-type
- * @property {boolean} [withNormal=true] - If true each coordinate normal is computed.
- * True if the layer inherits from {@link GeometryLayer}
- * @property {boolean} [withAltitude=true] - If true each coordinate altitude is kept
- * True if the layer inherits from {@link GeometryLayer}
- * @property {boolean} [overrideAltitudeInToZero=false] - If true, the altitude of the source data isn't taken into account for 3D geometry convertions.
- * the altitude will be override to 0. This can be useful if you don't have a DEM or provide a new one when converting (with Layer.convert).
+ * @property {string} [structure='2d'] - data structure type : 2d or 3d.
+ * If the structure is 3d, the feature have 3 dimensions by vertices positions and
+ * a normal for each vertices.
  * @property {Style} style - The style to inherit when creating
  * style for all new features.
  *
@@ -61,6 +67,10 @@ export class FeatureGeometry {
             this.extent = defaultExtent(feature.extent.crs);
             this._currentExtent = defaultExtent(feature.extent.crs);
         }
+        this.altitude = {
+            min: Infinity,
+            max: -Infinity,
+        };
     }
     /**
      * Add a new marker to indicate the starting of sub geometry and extends the vertices buffer.
@@ -109,7 +119,15 @@ export class FeatureGeometry {
      * @param {Feature} feature - the feature containing the geometry
      */
     pushCoordinates(coordIn, feature) {
+        if (this.size == 3) {
+            // set altitude from context
+            const base_altitude = feature.style[typeToStyleProperty[feature.type]].base_altitude;
+            coordIn.z = isNaN(base_altitude) ? base_altitude(this.properties, coordIn) : base_altitude;
+        }
+
         coordIn.as(feature.crs, coordOut);
+
+        feature.transformToLocalSystem(coordOut);
 
         if (feature.normals) {
             coordOut.geodesicNormal.toArray(feature.normals, feature._pos);
@@ -120,11 +138,17 @@ export class FeatureGeometry {
         if (this._currentExtent) {
             this._currentExtent.expandByCoordinates(feature.useCrsOut ? coordOut : coordIn);
         }
+
+        if (this.size == 3) {
+            this.altitude.min = Math.min(this.altitude.min, coordIn.z);
+            this.altitude.max = Math.max(this.altitude.max, coordIn.z);
+        }
     }
 
     /**
      * Push new values coordinates in vertices buffer.
      * No geographical conversion is made or the normal doesn't stored.
+     * No local transformation is made on coordinates.
      *
      * @param {Feature} feature - the feature containing the geometry
      * @param {number} long The longitude coordinate.
@@ -140,7 +164,12 @@ export class FeatureGeometry {
         feature._pushValues(long, lat, alt);
         // expand extent if present
         if (this._currentExtent) {
-            this._currentExtent.expandByValuesCoordinates(long, lat, alt);
+            this._currentExtent.expandByValuesCoordinates(long, lat);
+        }
+
+        if (this.size == 3) {
+            this.altitude.min = Math.min(this.altitude.min, alt);
+            this.altitude.max = Math.max(this.altitude.max, alt);
         }
     }
 
@@ -168,16 +197,24 @@ function push3DValues(value0, value1, value2 = 0) {
     this.vertices[this._pos++] = value2;
 }
 
-export const FEATURE_TYPES = {
-    POINT: 0,
-    LINE: 1,
-    POLYGON: 2,
-};
-
 /**
  *
  * This class improves and simplifies the construction and conversion of geographic data structures.
  * It's an intermediary structure between geomatic formats and THREE objects.
+ *
+ * **Warning**, the data (`extent` or `Coordinates`) can be stored in a local system.
+ * To use vertices or extent in `Feature.crs` projection,
+ * it's necessary to transform `Coordinates` or `Extent` by `FeatureCollection.matrixWorld`.
+ *
+ * ```js
+ * // To have feature extent in featureCollection.crs projection:
+ * feature.extent.applyMatrix4(featureCollection.matrixWorld);
+ *
+ * // To have feature vertex in feature.crs projection:
+ * coord.crs = feature.crs;
+ * coord.setFromArray(feature.vertices)
+ * coord.applyMatrix4(featureCollection.matrixWorld);
+ *```
  *
  * @property {string} type - Geometry type, can be `point`, `line`, or
  * `polygon`.
@@ -195,15 +232,9 @@ class Feature {
     /**
      *
      * @param {string} type type of Feature. It can be 'point', 'line' or 'polygon'.
-     * @param {string} crs Geographic or Geocentric coordinates system.
-     * @param {FeatureBuildingOptions} [options={}] options to build feature.
-     * @param {boolean} [options.buildExtent] Build extent and update when adding new vertice.
-     * @param {boolean} [options.withAltitude] Set vertice altitude when adding new vertice.
-     * @param {boolean} [options.withNormal] Set vertice normal when adding new vertice.
-     * @param {Style} [options.style] The style to inherit when creating a new
-     * style for this feature.
+     * @param {FeatureCollection} collection Parent feature collection.
      */
-    constructor(type, crs, options = {}) {
+    constructor(type, collection) {
         if (Object.keys(FEATURE_TYPES).find(t => FEATURE_TYPES[t] === type)) {
             this.type = type;
         } else {
@@ -211,18 +242,24 @@ class Feature {
         }
         this.geometries = [];
         this.vertices = [];
-        this.normals = options.withNormal ? [] : undefined;
-        this.crs = crs;
-        this.size = options.withAltitude ? 3 : 2;
-        if (options.buildExtent) {
+        this.crs = collection.crs;
+        this.size = collection.size;
+        this.normals = collection.size == 3 ? [] : undefined;
+        this.transformToLocalSystem = collection.transformToLocalSystem.bind(collection);
+        if (collection.extent) {
             // this.crs is final crs projection, is out projection.
             // If the extent crs is the same then we use output coordinate (coordOut) to expand it.
-            this.extent = defaultExtent(options.forcedExtentCrs || this.crs);
-            this.useCrsOut = !options.forceExtentCrs;
+            this.extent = defaultExtent(collection.extent.crs);
+            this.useCrsOut = this.extent.crs == this.crs;
         }
         this._pos = 0;
         this._pushValues = (this.size === 3 ? push3DValues : push2DValues).bind(this);
-        this.style = new Style({}, options.style);
+        this.style = new Style({}, collection.style);
+
+        this.altitude = {
+            min: Infinity,
+            max: -Infinity,
+        };
     }
     /**
      * Instance a new {@link FeatureGeometry}  and push in {@link Feature}.
@@ -241,6 +278,11 @@ class Feature {
         if (this.extent) {
             this.extent.union(geometry.extent);
         }
+
+        if (this.size == 3) {
+            this.altitude.min = Math.min(this.altitude.min, geometry.altitude.min);
+            this.altitude.max = Math.max(this.altitude.max, geometry.altitude.max);
+        }
     }
 
     /**
@@ -253,36 +295,132 @@ class Feature {
 
 export default Feature;
 
+const doNothing = () => {};
+
+const transformToLocalSystem3D = (coord, collection) => {
+    coord.geodesicNormal.applyNormalMatrix(collection.normalMatrixInverse);
+    return coord.applyMatrix4(collection.matrixWorldInverse);
+};
+
+const transformToLocalSystem2D = (coord, collection) => coord.applyMatrix4(collection.matrixWorldInverse);
+const axisZ = new THREE.Vector3(0, 0, 1);
+const alignYtoEast = new THREE.Quaternion();
 /**
+ * An object regrouping a list of [features]{@link Feature} and the extent of this collection.
+ * **Warning**, the data (`extent` or `Coordinates`) can be stored in a local system.
+ * The local system center is the `center` property.
+ * To use `Feature` vertices or `FeatureCollection/Feature` extent in FeatureCollection.crs projection,
+ * it's necessary to transform `Coordinates` or `Extent` by `FeatureCollection.matrixWorld`.
+ *
+ * ```js
+ * // To have featureCollection extent in featureCollection.crs projection:
+ * featureCollection.extent.applyMatrix4(featureCollection.matrixWorld);
+ *
+ * // To have feature vertex in featureCollection.crs projection:
+ * const vertices = featureCollection.features[0].vertices;
+ * coord.crs = featureCollection.crs;
+ * coord.setFromArray(vertices)
+ * coord.applyMatrix4(featureCollection.matrixWorld);
+ *```
+ *
+ * @extends THREE.Object3D
+ *
  * @property {Feature[]} features - The array of features composing the
  * collection.
  * @property {Extent?} extent - The 2D extent containing all the features
- * composing the collection.
+ * composing the collection. The extent projection is the same local projection `FeatureCollection`.
+ * To transform `FeatureCollection.extent` to `FeatureCollection.crs` projection, the transformation matrix must be applied.
+ *
+ * **WARNING** if crs is `EPSG:4978` because the 3d geocentric system doesn't work with 2D `Extent`,
+ * The FeatureCollection.extent projection is the original projection.
+ * In this case, there isn't need to transform the extent.
+ *
  * @property {string} crs - Geographic or Geocentric coordinates system.
  * @property {boolean} isFeatureCollection - Used to check whether this is FeatureCollection.
- * @property {THREE.Vector3} translation - Apply translation on vertices and extent to transform on coordinates system.
- * @property {THREE.Vector3} scale - Apply scale on vertices and extent to transform on coordinates system.
+ * @property {number} size - The size structure, it's 3 for 3d and 2 for 2d.
+ * @property {Style} style - The collection style used to display the feature collection.
+ * @property {boolean} isInverted - This option is to be set to the
+ * correct value, true or false (default being false), if the computation of
+ * the coordinates needs to be inverted to same scheme as OSM, Google Maps
+ * or other system. See [this link]{@link
+ * https://alastaira.wordpress.com/2011/07/06/converting-tms-tile-coordinates-to-googlebingosm-tile-coordinates}
+ * for more informations.
+ * @property {THREE.Matrix4} matrixWorldInverse - The matrix world inverse.
+ * @property {Coordinates} center - The local center coordinates in `EPSG:4326`.
+ * The local system is centred in this center.
  *
- * An object regrouping a list of [features]{@link Feature} and the extent of this collection.
  */
-export class FeatureCollection {
+
+export class FeatureCollection extends THREE.Object3D {
     /**
-     * Constructs a new instance.
-     *
-     * @param      {string}  crs      The crs projection.
      * @param      {FeatureBuildingOptions|Layer}  options  The building options .
      */
-    constructor(crs, options) {
+    constructor(options) {
+        super();
         this.isFeatureCollection = true;
-        // TODO: Replace crs parameter by CRS.formatToEPSG(options.crs)
-        this.crs = crs;
+        this.crs = CRS.formatToEPSG(options.crs);
         this.features = [];
-        this.optionsFeature = options || {};
-        if (this.optionsFeature.buildExtent) {
-            this.extent = defaultExtent(options.forcedExtentCrs || this.crs);
+        this.mergeFeatures = options.mergeFeatures === undefined ? true : options.mergeFeatures;
+        this.extent = options.buildExtent ? defaultExtent(options.forcedExtentCrs || this.crs) : undefined;
+        this.size = options.structure == '3d' ? 3 : 2;
+        this.filterExtent = options.filterExtent;
+        this.style = options.style;
+        this.isInverted = false;
+        this.matrixWorldInverse = new THREE.Matrix4();
+        this.center = new Coordinates('EPSG:4326', 0, 0);
+
+        if (this.size == 2) {
+            this._setLocalSystem = (center) => {
+                // set local system center
+                center.as('EPSG:4326', this.center);
+
+                // set position to local system center
+                this.position.copy(center);
+                this.updateMatrixWorld();
+                this._setLocalSystem = doNothing;
+            };
+            this._transformToLocalSystem = transformToLocalSystem2D;
+        } else {
+            this._setLocalSystem = (center) => {
+                // set local system center
+                center.as('EPSG:4326', this.center);
+
+                if (this.crs == 'EPSG:4978') {
+                    // align Z axe to geodesic normal.
+                    this.quaternion.setFromUnitVectors(axisZ, center.geodesicNormal);
+                    // align Y axe to East
+                    alignYtoEast.setFromAxisAngle(axisZ, THREE.MathUtils.degToRad(90 + this.center.longitude));
+                    this.quaternion.multiply(alignYtoEast);
+                }
+
+                // set position to local system center
+                this.position.copy(center);
+                this.updateMatrixWorld();
+                this.normalMatrix.getNormalMatrix(this.matrix);
+                this.normalMatrixInverse = new THREE.Matrix3().copy(this.normalMatrix).invert();
+
+                this._setLocalSystem = doNothing;
+            };
+            this._transformToLocalSystem = transformToLocalSystem3D;
         }
-        this.translation = new THREE.Vector3();
-        this.scale = new THREE.Vector3(1, 1, 1);
+
+        this.altitude = {
+            min: Infinity,
+            max: -Infinity,
+        };
+    }
+
+    /**
+     * Apply the matrix World inverse on the coordinates.
+     * This method is used when the coordinates is pushed
+     * to transform it in local system.
+     *
+     * @param   {Coordinates}  coordinates  The coordinates
+     * @returns {Coordinates} The coordinates in local system
+     */
+    transformToLocalSystem(coordinates) {
+        this._setLocalSystem(coordinates);
+        return this._transformToLocalSystem(coordinates, this);
     }
 
     /**
@@ -297,6 +435,24 @@ export class FeatureCollection {
                 this.extent.union(ext);
             }
         }
+        if (this.size == 3) {
+            for (const feature of this.features) {
+                this.altitude.min = Math.min(this.altitude.min, feature.altitude.min);
+                this.altitude.max = Math.max(this.altitude.max, feature.altitude.max);
+            }
+        }
+        this.altitude.min = this.altitude.min == Infinity ? 0 : this.altitude.min;
+        this.altitude.max = this.altitude.max == -Infinity ? 0 : this.altitude.max;
+    }
+
+    /**
+     * Updates the global transform of the object and its descendants.
+     *
+     * @param {booolean}  force   The force
+     */
+    updateMatrixWorld(force) {
+        super.updateMatrixWorld(force);
+        this.matrixWorldInverse.copy(this.matrixWorld).invert();
     }
 
     /**
@@ -317,10 +473,10 @@ export class FeatureCollection {
 
     requestFeature(type, callback) {
         const feature = this.features.find(callback);
-        if (feature && this.optionsFeature.mergeFeatures) {
+        if (feature && this.mergeFeatures) {
             return feature;
         } else {
-            const newFeature = new Feature(type, this.crs, this.optionsFeature);
+            const newFeature = new Feature(type, this);
             this.features.push(newFeature);
             return newFeature;
         }
@@ -356,7 +512,7 @@ export class FeatureCollection {
      * @return     {Feature}  The new referenced feature
      */
     newFeatureByReference(feature) {
-        const ref = new Feature(feature.type, this.crs, this.optionsFeature);
+        const ref = new Feature(feature.type, this);
         ref.extent = feature.extent;
         ref.geometries = feature.geometries;
         ref.normals = feature.normals;
@@ -365,21 +521,6 @@ export class FeatureCollection {
         ref._pos = feature._pos;
         this.features.push(ref);
         return ref;
-    }
-
-    /**
-     * Transforms a given {@link Coordinates}, using the translation and the
-     * scale of this collection.
-     *
-     * @param {Coordinates} coordinates - The coordinates to transform
-     *
-     * @return {Coordinates} The same coordinates, with transformation applied.
-     */
-    transformCoordinates(coordinates) {
-        coordinates.x = (coordinates.x / this.scale.x) - this.translation.x;
-        coordinates.y = (coordinates.y / this.scale.y) - this.translation.y;
-        coordinates.z = (coordinates.z / this.scale.z) - this.translation.z;
-        return coordinates;
     }
 
     setParentStyle(style) {
