@@ -74,7 +74,11 @@ function _preprocessLayer(view, layer, parentLayer) {
 
     if (layer.isLabelLayer) {
         view.mainLoop.gfxEngine.label2dRenderer.registerLayer(layer);
-    } else if (layer.labelEnabled) {
+    } else if (layer.labelEnabled || layer.addLabelLayer) {
+        if (layer.labelEnabled) {
+            // eslint-disable-next-line no-console
+            console.info('layer.labelEnabled is deprecated use addLabelLayer, instead of');
+        }
         // Because the features are shared between layer and labelLayer.
         layer.buildExtent = true;
         const labelLayer = new LabelLayer(`${layer.id}-label`, {
@@ -82,6 +86,7 @@ function _preprocessLayer(view, layer, parentLayer) {
             style: layer.style,
             zoom: layer.zoom,
             crs: source.crs,
+            visible: layer.visible,
         });
 
         layer.addEventListener('visible-property-changed', () => {

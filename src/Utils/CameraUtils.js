@@ -150,7 +150,7 @@ class CameraRig extends THREE.Object3D {
         const range = this.camera.position.length();
         this.target.rotation.x = Math.asin(this.camera.position.z / range);
         const cosPlanXY = THREE.MathUtils.clamp(this.camera.position.y / (Math.cos(this.target.rotation.x) * range), -1, 1);
-        this.target.rotation.z = Math.sign(-this.camera.position.x) * Math.acos(cosPlanXY);
+        this.target.rotation.z = Math.sign(-this.camera.position.x || 1) * Math.acos(cosPlanXY);
         this.camera.position.set(0, range, 0);
     }
 
@@ -163,7 +163,7 @@ class CameraRig extends THREE.Object3D {
             this.target.rotation.x = THREE.MathUtils.degToRad(params.tilt);
         }
         if (params.heading != undefined) {
-            this.target.rotation.z = THREE.MathUtils.degToRad(wrapTo180(params.heading + 180));
+            this.target.rotation.z = THREE.MathUtils.degToRad(-wrapTo180(params.heading + 180));
         }
         if (params.range) {
             this.camera.position.set(0, params.range, 0);
@@ -215,16 +215,22 @@ class CameraRig extends THREE.Object3D {
 
         this.addPlaceTargetOnGround(view, camera, params.coord, factor);
         this.end.applyParams(view, params);
+        // compute the angle along z-axis between the starting position and the end position
+        const difference = this.end.target.rotation.z - this.start.target.rotation.z;
+        // if that angle is superior to 180°, recompute the rotation as the complementary angle.
+        if (Math.abs(difference) > Math.PI) {
+            this.end.target.rotation.z = this.start.target.rotation.z + difference - Math.sign(difference) * 2 * Math.PI;
+        }
 
         animations.push(new TWEEN.Tween(factor, tweenGroup).to({ t: 1 }, time)
             .easing(params.easing)
             .onUpdate((d) => {
                 // rotate to coord destination in geocentric projection
                 if (view.referenceCrs == 'EPSG:4978') {
-                    THREE.Quaternion.slerp(this.start.quaternion, this.end.quaternion, this.quaternion, d.t);
+                    this.quaternion.slerpQuaternions(this.start.quaternion, this.end.quaternion, d.t);
                 }
                 // camera rotation
-                THREE.Quaternion.slerp(this.start.camera.quaternion, this.end.camera.quaternion, this.camera.quaternion, d.t);
+                this.camera.quaternion.slerpQuaternions(this.start.camera.quaternion, this.end.camera.quaternion, d.t);
                 // camera's target rotation
                 this.target.rotation.set(0, 0, 0);
                 this.target.rotateZ(THREE.MathUtils.lerp(this.start.target.rotation.z, this.end.target.rotation.z, d.t));
@@ -313,7 +319,7 @@ class CameraRig extends THREE.Object3D {
 
     get tilt() { return THREE.MathUtils.radToDeg(this.target.rotation.x); }
 
-    get heading() { return wrapTo180((THREE.MathUtils.radToDeg(this.target.rotation.z) + 180)); }
+    get heading() { return -wrapTo180((THREE.MathUtils.radToDeg(this.target.rotation.z) + 180)); }
 
     get range() { return this.camera.position.y; }
 }

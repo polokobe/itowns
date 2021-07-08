@@ -84,8 +84,7 @@ import CRS from 'Core/Geographic/Crs';
      *             crs: view.tileLayer.extent.crs,
      *             buildExtent: true,
      *             mergeFeatures: true,
-     *             withNormal: false,
-     *             withAltitude: false,
+     *             structure: '2d',
  *             },
  *         });
  *     }).then(function _(features) {
@@ -167,7 +166,14 @@ class FileSource extends Source {
             this._featuresCaches[options.out.crs].setByArray(features, [0]);
         }
         features.then((data) => {
-            this.extent = data.extent;
+            if (data.extent) {
+                this.extent = data.extent.clone();
+                // Transform local extent to data.crs projection.
+                if (this.extent.crs == data.crs) {
+                    this.extent.applyMatrix4(data.matrixWorld);
+                }
+            }
+
             if (data.isFeatureCollection) {
                 data.setParentStyle(options.out.style);
             }
